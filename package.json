@@ -2,6 +2,9 @@
   "name": "solo-vault-backend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "devDependencies": {
     "@types/node": "^22.15.3",
     "tsx": "^4.19.2",
