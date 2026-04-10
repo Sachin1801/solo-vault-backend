@@ -1,0 +1,20 @@
+{
+  "name": "solo-vault-backend",
+  "version": "0.1.0",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudformation": "^3.908.0"
+  },
+  "scripts": {
+    "iac": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy.ts",
+    "deploy": "npm run iac -- --env dev",
+    "deploy:staging": "npm run iac -- --env staging",
+    "destroy": "npm run iac -- --action destroy --env dev",
+    "destroy:staging": "npm run iac -- --action destroy --env staging"
+  }
+}

@@ -48,18 +48,97 @@ Supporting: Cognito (auth) | KMS (encryption) | Secrets Manager | CloudWatch
 ```bash
 # Prerequisites
 # - AWS CLI configured with appropriate credentials
-# - Node.js 20+ (Lambda runtime)
-# - AWS CDK or SAM CLI for deployment
+# - Node.js 20+
 
 # Install dependencies
 npm install
 
-# Deploy to AWS
+# Deploy baseline shared network stack (dev)
 npm run deploy
 
-# Run locally
-npm run dev
+# Deploy staging
+npm run deploy:staging
 ```
+
+Or with Make:
+
+```bash
+make install
+make deploy STAGE=dev
+make deploy STAGE=staging
+```
+
+Detailed infra deployment guide: [deploy.md](deploy.md)
+
+## Infrastructure Bootstrap (INFRA-1)
+
+This repository uses **CloudFormation templates deployed via TypeScript AWS SDK v3**.
+
+### Environment Configs
+
+- `infra/config/dev.json`
+- `infra/config/staging.json`
+
+Both environments are isolated with:
+- separate CloudFormation stack names
+- separate VPC CIDR ranges
+- environment tags
+- configurable `project_prefix` used in resource names/tags
+
+### What `npm run deploy` provisions
+
+The baseline stack provisions:
+- shared VPC
+- two private subnets
+- Lambda security group
+- RDS security group that only allows PostgreSQL (5432) from Lambda security group
+
+### Team deployment setup (IAM users)
+
+All team members can deploy from local machines with direct IAM user credentials.
+
+1. Create/access an IAM user with programmatic access.
+2. Attach permissions required for this ticket's baseline stack:
+   - CloudFormation stack create/update/describe
+   - EC2 VPC/subnet/security-group create/update/describe/tag
+   - IAM `PassRole` is not required for INFRA-1 baseline
+3. Configure credentials locally:
+
+```bash
+aws configure
+# Use region: us-east-1
+```
+
+4. Deploy:
+
+```bash
+npm run deploy
+npm run deploy:staging
+```
+
+### How to undo / delete resources
+
+To delete stacks and all resources created by this bootstrap:
+
+```bash
+# Delete dev stack
+npm run destroy -- --confirm-destroy solo-vault-shared-network-dev
+
+# Delete staging stack
+npm run destroy:staging -- --confirm-destroy solo-vault-shared-network-staging
+```
+
+Or with Make:
+
+```bash
+make destroy STAGE=dev
+make destroy STAGE=staging
+```
+
+`STAGE` is required for `make deploy` and `make destroy` and must be either `dev` or `staging`.
+
+This uses CloudFormation stack deletion, so resources are removed in dependency-safe order.
+Destroy now requires an explicit stack-name confirmation token to reduce accidental deletion risk.
 
 ## API Reference
 
