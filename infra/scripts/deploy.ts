@@ -73,7 +73,16 @@ function parseEnvArg(): Environment {
 function loadConfig(env: Environment): DeployConfig {
   const configPath = resolve(process.cwd(), "infra", "config", `${env}.json`);
   const raw = readFileSync(configPath, "utf-8");
-  return JSON.parse(raw) as DeployConfig;
+  const config = JSON.parse(raw) as DeployConfig;
+
+  if (config.environment !== env) {
+    throw new Error(
+      `Config mismatch: ${configPath} declares environment "${config.environment}" but CLI selected "${env}". ` +
+        `Refusing to deploy to avoid targeting the wrong stack.`
+    );
+  }
+
+  return config;
 }
 
 function createParameters(config: DeployConfig): Parameter[] {
@@ -91,13 +100,28 @@ function createTags(config: DeployConfig): Tag[] {
   return entries.map(([Key, Value]) => ({ Key, Value }));
 }
 
+// CloudFormation surfaces multiple distinct conditions as a generic `ValidationError`
+// (missing stack, no-op update, bad parameter, etc.), so narrow by both the exception
+// name AND a message pattern specific to the case we want to handle.
+function isCloudFormationValidationError(error: unknown, messagePattern: RegExp): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  if (error.name !== "ValidationError") {
+    return false;
+  }
+  return messagePattern.test(error.message);
+}
+
+const STACK_NOT_FOUND_PATTERN = /does not exist/i;
+const NO_UPDATES_PATTERN = /no updates are to be performed/i;
+
 async function stackExists(client: CloudFormationClient, stackName: string): Promise<boolean> {
   try {
     await client.send(new DescribeStacksCommand({ StackName: stackName }));
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("does not exist")) {
+    if (isCloudFormationValidationError(error, STACK_NOT_FOUND_PATTERN)) {
       return false;
     }
     throw error;
@@ -141,8 +165,7 @@ async function deployStack(client: CloudFormationClient, config: DeployConfig): 
       );
       console.log(`Stack update complete: ${config.stack_name}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("No updates are to be performed")) {
+      if (isCloudFormationValidationError(error, NO_UPDATES_PATTERN)) {
         console.log(`No changes detected for stack: ${config.stack_name}`);
         return;
       }

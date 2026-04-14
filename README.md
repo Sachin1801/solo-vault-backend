@@ -93,15 +93,58 @@ The baseline stack provisions:
 - Lambda security group
 - RDS security group that only allows PostgreSQL (5432) from Lambda security group
 
-### Team deployment setup (IAM users)
+### Team deployment setup
 
-All team members can deploy from local machines with direct IAM user credentials.
+> **Security note:** Prefer short-lived credentials over long-lived IAM user access keys.
+> Long-lived keys are the single most common source of accidentally-exposed AWS
+> credentials (committed to git, pasted in chat, leaked via shell history). Use one of
+> the options below in order of preference.
 
-1. Create/access an IAM user with programmatic access.
-2. Attach permissions required for this ticket's baseline stack:
-   - CloudFormation stack create/update/describe
+#### Option A (recommended): AWS IAM Identity Center (SSO)
+
+Short-lived credentials refreshed via browser login. No permanent access keys on disk.
+
+1. Ask the account admin for an SSO start URL and a permission set scoped to this project.
+2. Configure an SSO profile locally:
+
+```bash
+aws configure sso
+# Follow the prompts, use region: us-east-1
+```
+
+3. Sign in and deploy:
+
+```bash
+aws sso login --profile solo-vault
+AWS_PROFILE=solo-vault npm run deploy
+```
+
+#### Option B: AssumeRole with a named profile
+
+Use a low-privilege IAM user (or SSO) to assume a deploy role with CloudFormation
+permissions. Keeps the attack surface small.
+
+```ini
+# ~/.aws/config
+[profile solo-vault-deploy]
+role_arn = arn:aws:iam::<account-id>:role/SoloVaultDeploy
+source_profile = default
+region = us-east-1
+```
+
+```bash
+AWS_PROFILE=solo-vault-deploy npm run deploy
+```
+
+#### Option C (last resort): IAM user access keys
+
+Acceptable for a short-lived course project; **never use for anything production**.
+
+1. Create an IAM user with programmatic access.
+2. Attach the minimum permissions required for the baseline stack:
+   - `cloudformation:CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`
    - EC2 VPC/subnet/security-group create/update/describe/tag
-   - IAM `PassRole` is not required for INFRA-1 baseline
+   - `IAM:PassRole` is **not** required for INFRA-1.
 3. Configure credentials locally:
 
 ```bash
@@ -115,6 +158,9 @@ aws configure
 npm run deploy
 npm run deploy:staging
 ```
+
+**If you use Option C, rotate the keys at least every 90 days, never commit them to
+git, and delete the user when the course project ends.**
 
 ### How to undo / delete resources
 
