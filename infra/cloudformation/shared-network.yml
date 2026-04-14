@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault shared network baseline (VPC + Lambda/RDS security groups)
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  VpcCidr:
+    Type: String
+  PrivateSubnetACidr:
+    Type: String
+  PrivateSubnetBCidr:
+    Type: String
+
+Resources:
+  SharedVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVpc
+      CidrBlock: !Ref PrivateSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-private-a"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVpc
+      CidrBlock: !Ref PrivateSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-private-b"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Lambda access group (${EnvironmentName})"
+      VpcId: !Ref SharedVpc
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-sg"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "RDS access group (${EnvironmentName})"
+      VpcId: !Ref SharedVpc
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-sg"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+Outputs:
+  VpcId:
+    Value: !Ref SharedVpc
+  PrivateSubnetAId:
+    Value: !Ref PrivateSubnetA
+  PrivateSubnetBId:
+    Value: !Ref PrivateSubnetB
+  LambdaSecurityGroupId:
+    Value: !Ref LambdaSecurityGroup
+  RdsSecurityGroupId:
+    Value: !Ref RdsSecurityGroup

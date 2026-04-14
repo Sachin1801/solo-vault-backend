@@ -1,0 +1,14 @@
+{
+  "project_prefix": "solo-vault",
+  "environment": "staging",
+  "region": "us-east-1",
+  "stack_name": "solo-vault-shared-network-staging",
+  "vpc_cidr": "10.20.0.0/16",
+  "private_subnet_a_cidr": "10.20.1.0/24",
+  "private_subnet_b_cidr": "10.20.2.0/24",
+  "tags": {
+    "Project": "solo-vault",
+    "Environment": "staging",
+    "ManagedBy": "aws-sdk-js-v3"
+  }
+}

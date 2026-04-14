@@ -1,0 +1,14 @@
+{
+  "project_prefix": "solo-vault",
+  "environment": "dev",
+  "region": "us-east-1",
+  "stack_name": "solo-vault-shared-network-dev",
+  "vpc_cidr": "10.10.0.0/16",
+  "private_subnet_a_cidr": "10.10.1.0/24",
+  "private_subnet_b_cidr": "10.10.2.0/24",
+  "tags": {
+    "Project": "solo-vault",
+    "Environment": "dev",
+    "ManagedBy": "aws-sdk-js-v3"
+  }
+}
