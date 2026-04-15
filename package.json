@@ -15,9 +15,9 @@
   },
   "scripts": {
     "iac": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy.ts",
-    "deploy": "npm run iac -- --env dev",
-    "deploy:staging": "npm run iac -- --env staging",
-    "destroy": "npm run iac -- --action destroy --env dev",
-    "destroy:staging": "npm run iac -- --action destroy --env staging"
+    "deploy": "npm run iac -- --env dev --stack shared-network",
+    "deploy:staging": "npm run iac -- --env staging --stack shared-network",
+    "destroy": "npm run iac -- --action destroy --env dev --stack shared-network",
+    "destroy:staging": "npm run iac -- --action destroy --env staging --stack shared-network"
   }
 }
