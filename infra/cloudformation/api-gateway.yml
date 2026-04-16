@@ -1,0 +1,796 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault REST API Gateway with Cognito authorizer (INFRA-3)
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  StageName:
+    Type: String
+    Default: prod
+    AllowedPattern: "^[a-z0-9]+$"
+  ThrottleRateLimit:
+    Type: Number
+    Default: 17
+    Description: Steady-state requests per second (~1000/min). Stage-wide; per-user throttling needs API keys (follow-up).
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 100
+    Description: Burst capacity for short spikes.
+
+Resources:
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-api"
+      Description: Solo Vault REST API — vault entries, files, sessions, auth
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: aws-sdk-js-v3
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-cognito-authorizer"
+      RestApiId: !Ref RestApi
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-cognito-user-pool-arn"
+
+  AuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: auth
+
+  AuthLinkResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref AuthResource
+      PathPart: link
+
+  AuthRefreshResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref AuthResource
+      PathPart: refresh
+
+  VaultResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: vault
+
+  VaultEntriesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref VaultResource
+      PathPart: entries
+
+  VaultEntryByIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref VaultEntriesResource
+      PathPart: "{id}"
+
+  VaultEntryUploadResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref VaultEntryByIdResource
+      PathPart: upload
+
+  VaultEntryDownloadResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref VaultEntryByIdResource
+      PathPart: download
+
+  VaultSearchResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref VaultResource
+      PathPart: search
+
+  SessionsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: sessions
+
+  SessionsSyncResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref SessionsResource
+      PathPart: sync
+
+  SessionByIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref SessionsResource
+      PathPart: "{id}"
+
+  # Auth endpoints have AuthorizationType NONE because they exchange a
+  # Supabase JWT (or refresh token) for Cognito tokens — there is no
+  # Cognito session yet to authorize against.
+  AuthLinkPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref AuthLinkResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  AuthLinkOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref AuthLinkResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  AuthRefreshPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref AuthRefreshResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  AuthRefreshOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref AuthRefreshResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  VaultEntriesGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntriesResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntriesPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntriesResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntriesOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntriesResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  VaultEntryByIdGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryByIdResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntryByIdPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryByIdResource
+      HttpMethod: PUT
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntryByIdDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryByIdResource
+      HttpMethod: DELETE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntryByIdOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryByIdResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,PUT,DELETE,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  VaultEntryUploadPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryUploadResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntryUploadOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryUploadResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  VaultEntryDownloadGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryDownloadResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultEntryDownloadOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryDownloadResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  VaultSearchPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultSearchResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  VaultSearchOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultSearchResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  SessionsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionsResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  SessionsOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  SessionsSyncPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionsSyncResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  SessionsSyncOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionsSyncResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  SessionByIdGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionByIdResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  SessionByIdDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionByIdResource
+      HttpMethod: DELETE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 501}'
+        IntegrationResponses:
+          - StatusCode: "501"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses:
+        - StatusCode: "501"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  SessionByIdOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref SessionByIdResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,DELETE,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AuthLinkPostMethod
+      - AuthLinkOptionsMethod
+      - AuthRefreshPostMethod
+      - AuthRefreshOptionsMethod
+      - VaultEntriesGetMethod
+      - VaultEntriesPostMethod
+      - VaultEntriesOptionsMethod
+      - VaultEntryByIdGetMethod
+      - VaultEntryByIdPutMethod
+      - VaultEntryByIdDeleteMethod
+      - VaultEntryByIdOptionsMethod
+      - VaultEntryUploadPostMethod
+      - VaultEntryUploadOptionsMethod
+      - VaultEntryDownloadGetMethod
+      - VaultEntryDownloadOptionsMethod
+      - VaultSearchPostMethod
+      - VaultSearchOptionsMethod
+      - SessionsGetMethod
+      - SessionsOptionsMethod
+      - SessionsSyncPostMethod
+      - SessionsSyncOptionsMethod
+      - SessionByIdGetMethod
+      - SessionByIdDeleteMethod
+      - SessionByIdOptionsMethod
+    Properties:
+      RestApiId: !Ref RestApi
+      Description: Initial deployment of all 14 endpoints with MOCK integrations
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref StageName
+      Description: !Sub "${EnvironmentName} stage"
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: !Ref ThrottleRateLimit
+          ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+          MetricsEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: !Sub "${ProjectPrefix}-${EnvironmentName}-usage-plan"
+      Description: "Stage-wide throttle (per-user throttling needs API keys — follow-up)"
+      ApiStages:
+        - ApiId: !Ref RestApi
+          Stage: !Ref ApiStage
+      Throttle:
+        RateLimit: !Ref ThrottleRateLimit
+        BurstLimit: !Ref ThrottleBurstLimit
+
+Outputs:
+  ApiId:
+    Description: REST API ID
+    Value: !Ref RestApi
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-api-id"
+
+  ApiRootResourceId:
+    Description: Root resource ID (for downstream stacks adding child resources)
+    Value: !GetAtt RestApi.RootResourceId
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-api-root-resource-id"
+
+  ApiUrl:
+    Description: Base URL for the deployed API
+    Value: !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-api-url"
+
+  CognitoAuthorizerId:
+    Description: Cognito authorizer ID (for downstream stacks attaching new methods)
+    Value: !Ref CognitoAuthorizer
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-api-cognito-authorizer-id"

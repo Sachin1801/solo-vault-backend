@@ -18,6 +18,11 @@
     "deploy": "npm run iac -- --env dev",
     "deploy:staging": "npm run iac -- --env staging",
     "destroy": "npm run iac -- --action destroy --env dev",
-    "destroy:staging": "npm run iac -- --action destroy --env staging"
+    "destroy:staging": "npm run iac -- --action destroy --env staging",
+    "iac:apigw": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy-api-gateway.ts",
+    "deploy:apigw": "npm run iac:apigw -- --env dev",
+    "deploy:apigw:staging": "npm run iac:apigw -- --env staging",
+    "destroy:apigw": "npm run iac:apigw -- --action destroy --env dev",
+    "destroy:apigw:staging": "npm run iac:apigw -- --action destroy --env staging"
   }
 }
