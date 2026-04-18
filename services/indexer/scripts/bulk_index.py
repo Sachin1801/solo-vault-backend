@@ -21,14 +21,16 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import os
+
 import boto3
 import httpx
 
 # ── Dataset config ────────────────────────────────────────────────────────────
 
-MINIO_ENDPOINT = "http://localhost:9000"
-MINIO_ACCESS   = "minioadmin"
-MINIO_SECRET   = "minioadmin"
+MINIO_ENDPOINT = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
+MINIO_ACCESS   = os.getenv("S3_ACCESS_KEY", "minioadmin")
+MINIO_SECRET   = os.getenv("S3_SECRET_KEY", "minioadmin")
 BUCKET         = "vault-test"
 
 GROUP_CONFIG = {
