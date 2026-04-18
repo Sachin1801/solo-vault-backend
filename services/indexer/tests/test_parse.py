@@ -207,7 +207,7 @@ def test_parse_unsorted_reads_text():
 
 
 def test_parse_unsorted_binary_returns_placeholder():
-    path = _write(b"\x00\x01\x02\x03" * 100, ".bin")
+    path = _write(b"\xff" * 100, ".bin")  # \xff is never valid UTF-8
     result = parse(_job(kind=EntryKind.UNSORTED, file_name="blob.bin"), path)
     assert "[Binary file]" in result
 
