@@ -16,15 +16,21 @@ import {
 
 type Environment = "dev" | "staging";
 
+type StackName = "shared-network" | "secrets";
+
+const STACK_NAMES: readonly StackName[] = ["shared-network", "secrets"];
+
+type StackConfig = {
+  stack_name: string;
+  parameters: Record<string, string>;
+};
+
 type DeployConfig = {
   project_prefix: string;
   environment: Environment;
   region: string;
-  stack_name: string;
-  vpc_cidr: string;
-  private_subnet_a_cidr: string;
-  private_subnet_b_cidr: string;
   tags?: Record<string, string>;
+  stacks: Record<StackName, StackConfig>;
 };
 
 type Action = "deploy" | "destroy";
@@ -70,6 +76,22 @@ function parseEnvArg(): Environment {
   return envValue;
 }
 
+function parseStackArg(): StackName {
+  const stackIndex = process.argv.findIndex((arg) => arg === "--stack");
+  if (stackIndex === -1 || stackIndex + 1 >= process.argv.length) {
+    throw new Error(
+      `Missing --stack argument. Allowed: ${STACK_NAMES.join(", ")}.`
+    );
+  }
+  const stackValue = process.argv[stackIndex + 1];
+  if (!STACK_NAMES.includes(stackValue as StackName)) {
+    throw new Error(
+      `Invalid --stack value "${stackValue}". Allowed: ${STACK_NAMES.join(", ")}.`
+    );
+  }
+  return stackValue as StackName;
+}
+
 function loadConfig(env: Environment): DeployConfig {
   const configPath = resolve(process.cwd(), "infra", "config", `${env}.json`);
   const raw = readFileSync(configPath, "utf-8");
@@ -85,14 +107,28 @@ function loadConfig(env: Environment): DeployConfig {
   return config;
 }
 
-function createParameters(config: DeployConfig): Parameter[] {
-  return [
+function resolveStackConfig(config: DeployConfig, stack: StackName): StackConfig {
+  const stackConfig = config.stacks?.[stack];
+  if (!stackConfig) {
+    throw new Error(
+      `Config is missing an entry for stack "${stack}". Add it under the "stacks" key in the env config.`
+    );
+  }
+  return stackConfig;
+}
+
+// Every template takes ProjectPrefix + EnvironmentName; stack-specific parameters
+// are merged in from the env config so this script doesn't need to know which
+// parameters belong to which template.
+function createParameters(config: DeployConfig, stackConfig: StackConfig): Parameter[] {
+  const base: Parameter[] = [
     { ParameterKey: "ProjectPrefix", ParameterValue: config.project_prefix },
-    { ParameterKey: "EnvironmentName", ParameterValue: config.environment },
-    { ParameterKey: "VpcCidr", ParameterValue: config.vpc_cidr },
-    { ParameterKey: "PrivateSubnetACidr", ParameterValue: config.private_subnet_a_cidr },
-    { ParameterKey: "PrivateSubnetBCidr", ParameterValue: config.private_subnet_b_cidr }
+    { ParameterKey: "EnvironmentName", ParameterValue: config.environment }
   ];
+  const custom = Object.entries(stackConfig.parameters ?? {}).map(
+    ([ParameterKey, ParameterValue]): Parameter => ({ ParameterKey, ParameterValue })
+  );
+  return [...base, ...custom];
 }
 
 function createTags(config: DeployConfig): Tag[] {
@@ -141,19 +177,24 @@ async function printOutputs(client: CloudFormationClient, stackName: string): Pr
   }
 }
 
-async function deployStack(client: CloudFormationClient, config: DeployConfig): Promise<void> {
-  const templatePath = resolve(process.cwd(), "infra", "cloudformation", "shared-network.yml");
+async function deployStack(
+  client: CloudFormationClient,
+  config: DeployConfig,
+  stack: StackName,
+  stackConfig: StackConfig
+): Promise<void> {
+  const templatePath = resolve(process.cwd(), "infra", "cloudformation", `${stack}.yml`);
   const templateBody = readFileSync(templatePath, "utf-8");
-  const parameters = createParameters(config);
+  const parameters = createParameters(config, stackConfig);
   const tags = createTags(config);
-  const exists = await stackExists(client, config.stack_name);
+  const exists = await stackExists(client, stackConfig.stack_name);
 
   if (exists) {
     try {
-      console.log(`Updating stack ${config.stack_name} in ${config.region}...`);
+      console.log(`Updating stack ${stackConfig.stack_name} in ${config.region}...`);
       await client.send(
         new UpdateStackCommand({
-          StackName: config.stack_name,
+          StackName: stackConfig.stack_name,
           TemplateBody: templateBody,
           Parameters: parameters,
           Tags: tags
@@ -161,21 +202,21 @@ async function deployStack(client: CloudFormationClient, config: DeployConfig): 
       );
       await waitUntilStackUpdateComplete(
         { client, maxWaitTime: 600 },
-        { StackName: config.stack_name }
+        { StackName: stackConfig.stack_name }
       );
-      console.log(`Stack update complete: ${config.stack_name}`);
+      console.log(`Stack update complete: ${stackConfig.stack_name}`);
     } catch (error) {
       if (isCloudFormationValidationError(error, NO_UPDATES_PATTERN)) {
-        console.log(`No changes detected for stack: ${config.stack_name}`);
+        console.log(`No changes detected for stack: ${stackConfig.stack_name}`);
         return;
       }
       throw error;
     }
   } else {
-    console.log(`Creating stack ${config.stack_name} in ${config.region}...`);
+    console.log(`Creating stack ${stackConfig.stack_name} in ${config.region}...`);
     await client.send(
       new CreateStackCommand({
-        StackName: config.stack_name,
+        StackName: stackConfig.stack_name,
         TemplateBody: templateBody,
         Parameters: parameters,
         Tags: tags
@@ -183,41 +224,47 @@ async function deployStack(client: CloudFormationClient, config: DeployConfig): 
     );
     await waitUntilStackCreateComplete(
       { client, maxWaitTime: 600 },
-      { StackName: config.stack_name }
+      { StackName: stackConfig.stack_name }
     );
-    console.log(`Stack creation complete: ${config.stack_name}`);
+    console.log(`Stack creation complete: ${stackConfig.stack_name}`);
   }
 
-  await printOutputs(client, config.stack_name);
+  await printOutputs(client, stackConfig.stack_name);
 }
 
-async function destroyStack(client: CloudFormationClient, config: DeployConfig): Promise<void> {
-  const exists = await stackExists(client, config.stack_name);
+async function destroyStack(
+  client: CloudFormationClient,
+  stackConfig: StackConfig,
+  region: string
+): Promise<void> {
+  const exists = await stackExists(client, stackConfig.stack_name);
   if (!exists) {
-    console.log(`Stack does not exist, nothing to destroy: ${config.stack_name}`);
+    console.log(`Stack does not exist, nothing to destroy: ${stackConfig.stack_name}`);
     return;
   }
 
-  console.log(`Deleting stack ${config.stack_name} in ${config.region}...`);
-  await client.send(new DeleteStackCommand({ StackName: config.stack_name }));
+  console.log(`Deleting stack ${stackConfig.stack_name} in ${region}...`);
+  await client.send(new DeleteStackCommand({ StackName: stackConfig.stack_name }));
   await waitUntilStackDeleteComplete(
     { client, maxWaitTime: 600 },
-    { StackName: config.stack_name }
+    { StackName: stackConfig.stack_name }
   );
-  console.log(`Stack deletion complete: ${config.stack_name}`);
+  console.log(`Stack deletion complete: ${stackConfig.stack_name}`);
 }
 
 async function run(): Promise<void> {
   const action = parseActionArg();
   const env = parseEnvArg();
+  const stack = parseStackArg();
   const config = loadConfig(env);
+  const stackConfig = resolveStackConfig(config, stack);
   const client = new CloudFormationClient({ region: config.region });
   if (action === "destroy") {
-    parseConfirmDestroyArg(config.stack_name);
-    await destroyStack(client, config);
+    parseConfirmDestroyArg(stackConfig.stack_name);
+    await destroyStack(client, stackConfig, config.region);
     return;
   }
-  await deployStack(client, config);
+  await deployStack(client, config, stack, stackConfig);
 }
 
 run().catch((error) => {
