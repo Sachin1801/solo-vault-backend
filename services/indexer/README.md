@@ -242,11 +242,16 @@ docker compose run --rm app python -m pytest tests/test_routes.py tests/test_pip
 ### Single-group benchmark with WebSocket stage timings
 
 ```bash
-# 3 files per group, saves results to JSON
-python scripts/benchmark.py --group all --limit 3 --out results_v1.json
+# Via Makefile (recommended — runs inside the app container)
+make bench
+
+# Or directly inside the container:
+docker compose run --rm app python scripts/benchmark.py \
+  --group all --limit 3 --out results_v1.json --api http://app:8000
 
 # Compare two runs (e.g. before/after a parser change)
-python scripts/benchmark.py --compare results_v1.json results_v2.json
+docker compose run --rm app python scripts/benchmark.py \
+  --compare results_v1.json results_v2.json
 ```
 
 Output includes per-file stage durations (parse · embed · store) and a summary table.
@@ -254,11 +259,16 @@ Output includes per-file stage durations (parse · embed · store) and a summary
 ### Bulk indexing
 
 ```bash
-# Submit 10 files from each group, wait for completion, print summary
-python scripts/bulk_index.py --group all --limit 10 --concurrency 2
+# Via Makefile (recommended)
+make bulk
+
+# Or directly:
+docker compose run --rm app python scripts/bulk_index.py \
+  --group all --limit 10 --concurrency 2 --api http://app:8000
 
 # Submit without waiting
-python scripts/bulk_index.py --group dirty --limit 50 --no-wait
+docker compose run --rm app python scripts/bulk_index.py \
+  --group dirty --limit 50 --no-wait --api http://app:8000
 ```
 
 ### Dataset groups (in `vault-test` bucket)

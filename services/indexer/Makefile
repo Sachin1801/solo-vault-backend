@@ -13,10 +13,12 @@ test-unit:
 		tests/test_validate.py tests/test_parse.py tests/test_cache.py -v
 
 bench:
-	python scripts/benchmark.py --group all --limit 3 --out results_latest.json
+	docker compose run --rm app python scripts/benchmark.py \
+		--group all --limit 3 --out results_latest.json --api http://app:8000
 
 bulk:
-	python scripts/bulk_index.py --group all --limit 10 --concurrency 2
+	docker compose run --rm app python scripts/bulk_index.py \
+		--group all --limit 10 --concurrency 2 --api http://app:8000
 
 migrate:
 	docker compose exec postgres psql -U vault -d vault -f /app/app/db/schema.sql
