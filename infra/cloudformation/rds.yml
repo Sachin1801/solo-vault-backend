@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault RDS PostgreSQL instance with pgvector (INFRA-5)
+
+# What this stack creates:
+#   - DBSubnetGroup spanning the two private subnets from shared-network
+#   - DBInstance (Postgres 15, encrypted at rest with the RDS KMS key from secrets)
+#   - SecretTargetAttachment that rewrites the existing db-credentials secret
+#     to include host/port/engine/dbname once the instance exists
+#
+# Network / auth inputs come from shared-network + secrets via Fn::ImportValue,
+# so this template is parameter-light. Instance sizing is the only env-specific
+# knob and is passed through from infra/config/{env}.json.
+#
+# pgvector is installed with CREATE EXTENSION vector at migration time — no
+# custom parameter group is required. Postgres 15.7+ ships pgvector 0.7+.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+
+  DbName:
+    Type: String
+    Default: solovault
+    AllowedPattern: "^[a-z][a-z0-9_]{2,62}$"
+    Description: Initial database created on the instance.
+
+  DbInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedPattern: "^db\\.[a-z0-9]+\\.[a-z0-9]+$"
+
+  DbEngineVersion:
+    Type: String
+    Default: "15.7"
+
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1000
+
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 0
+    MaxValue: 35
+
+  DbDeletionProtection:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+  DbMultiAz:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub "${ProjectPrefix} ${EnvironmentName} RDS subnet group (private)"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-subnet-group"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectPrefix}-${EnvironmentName}-pg"
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      KmsKeyId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-cmk-arn"
+
+      DBName: !Ref DbName
+      # Master credentials come from the db-credentials secret created by the
+      # secrets stack. SecretTargetAttachment (below) fills in host/port/dbname
+      # on the secret after the instance is created.
+      MasterUsername: !Sub
+        - "{{resolve:secretsmanager:${SecretArn}:SecretString:username}}"
+        - SecretArn:
+            Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-db-credentials-arn"
+      MasterUserPassword: !Sub
+        - "{{resolve:secretsmanager:${SecretArn}:SecretString:password}}"
+        - SecretArn:
+            Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-db-credentials-arn"
+
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-sg-id"
+      PubliclyAccessible: false
+
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      DeletionProtection: !Ref DbDeletionProtection
+      MultiAZ: !Ref DbMultiAz
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+
+      EnableCloudwatchLogsExports:
+        - postgresql
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-pg"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  DbCredentialsSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-db-credentials-arn"
+      TargetId: !Ref DbInstance
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  DbInstanceEndpoint:
+    Description: RDS endpoint hostname
+    Value: !GetAtt DbInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-endpoint"
+  DbInstancePort:
+    Description: RDS port
+    Value: !GetAtt DbInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-port"
+  DbInstanceArn:
+    Description: RDS instance ARN
+    Value: !Sub "arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${DbInstance}"
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-arn"
+  DbName:
+    Description: Initial database name
+    Value: !Ref DbName
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-dbname"
