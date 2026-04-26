@@ -18,7 +18,9 @@ Output:
 
 import argparse
 import json
+import os
 import statistics
+import sys
 import threading
 import time
 import uuid
@@ -26,11 +28,33 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
-import os
-
 import boto3
 import httpx
 import websocket  # websocket-client
+
+STAGE_LABEL = {
+    "validate": "validate",
+    "download": "download",
+    "parse":    "parse   ",
+    "chunk":    "chunk   ",
+    "embed":    "embed   ",
+    "store":    "store   ",
+    "done":     "done    ",
+    "failed":   "FAILED  ",
+}
+
+
+def _bar(pct: int, width: int = 30) -> str:
+    filled = int(width * pct / 100)
+    return f"[{'█' * filled}{'░' * (width - filled)}] {pct:3d}%"
+
+
+def _render_progress(step: str, pct: int, elapsed: float, suffix: str = "") -> None:
+    label = STAGE_LABEL.get(step, f"{step:<8}")
+    line = f"    {_bar(pct)}  {label}  {elapsed:5.1f}s{suffix}"
+    sys.stdout.write(f"\r{line:<78}")
+    sys.stdout.flush()
+
 
 MINIO_ENDPOINT = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
 MINIO_ACCESS   = os.getenv("S3_ACCESS_KEY", "minioadmin")
@@ -139,13 +163,14 @@ def run_benchmark_job(api: str, user: str, group: str, obj: dict) -> BenchResult
         "memory_type": "",
     }
     t_submit = time.time()
-    resp = httpx.post(f"{api}/index", json=payload, timeout=10)
+    resp = httpx.post(f"{api}/index", json=payload, timeout=30)
     resp.raise_for_status()
 
     # Subscribe to WebSocket for stage timings
     ws_url = api.replace("http://", "ws://") + f"/ws/{entry_id}"
     events_done = threading.Event()
     prev_stage_time = [t_submit]
+    live = {"step": "queued", "pct": 0}  # shared state for ticker
 
     def on_message(ws, message):
         t_now = time.time()
@@ -154,11 +179,14 @@ def run_benchmark_job(api: str, user: str, group: str, obj: dict) -> BenchResult
         except Exception:
             return
         step = data.get("step", "")
+        pct  = data.get("progress_pct", live["pct"])
         elapsed = t_now - t_submit
         result.stage_times[step] = elapsed
-        # Duration = time since previous stage event
         result.stage_durations[step] = t_now - prev_stage_time[0]
         prev_stage_time[0] = t_now
+        live["step"] = step
+        live["pct"]  = pct
+        _render_progress(step, pct, elapsed)
 
         if data.get("progress_pct") in (100, 0) and step in ("done", "failed"):
             result.final_status = data.get("status", step)
@@ -179,8 +207,15 @@ def run_benchmark_job(api: str, user: str, group: str, obj: dict) -> BenchResult
         on_error=on_error,
         on_open=on_open,
     )
-    t = threading.Thread(target=ws.run_forever, daemon=True)
-    t.start()
+    ws_thread = threading.Thread(target=ws.run_forever, daemon=True)
+    ws_thread.start()
+
+    # Ticker: refresh elapsed time every second so the bar moves even between stages
+    def _ticker():
+        while not events_done.is_set():
+            _render_progress(live["step"], live["pct"], time.time() - t_submit)
+            time.sleep(1)
+    threading.Thread(target=_ticker, daemon=True).start()
 
     # Wait up to 30 minutes
     if not events_done.wait(timeout=1800):
@@ -348,12 +383,18 @@ def main() -> None:
     print(f"\nRunning benchmark on {len(all_objects)} files (sequential per group)...")
     results: list[BenchResult] = []
 
-    for group, obj in all_objects:
+    for i, (group, obj) in enumerate(all_objects, 1):
         fname = obj["Key"].split("/")[-1]
-        print(f"\n  → {group}/{fname} ({obj['Size']//1024}KB)", flush=True)
+        size_kb = obj["Size"] // 1024 or 1
+        print(f"\n[{i}/{len(all_objects)}] {group}/{fname} ({size_kb} KB)", flush=True)
         r = run_benchmark_job(args.api, args.user, group, obj)
         icon = "✓" if r.final_status == "indexed" else "✗"
-        print(f"    {icon} {r.final_status}  total={r.total_s:.1f}s  chunks={r.chunk_count}")
+        # Overwrite the progress bar line with the final result
+        final = f"    {icon} {r.final_status:<10}  {r.total_s:.1f}s  chunks={r.chunk_count}"
+        if r.error:
+            final += f"  ERR: {r.error[:40]}"
+        sys.stdout.write(f"\r{final:<78}\n")
+        sys.stdout.flush()
         results.append(r)
 
     print_report(results)

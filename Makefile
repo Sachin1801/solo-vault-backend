@@ -3,7 +3,7 @@ SHELL := /bin/bash
 STAGE ?=
 STACK_NAME := solo-vault-shared-network-$(STAGE)
 
-.PHONY: help install deploy destroy ensure-stage
+.PHONY: help install deploy destroy ensure-stage deploy-pipeline destroy-pipeline upload-dataset
 
 help:
 	@echo "Usage:"
@@ -29,3 +29,16 @@ deploy: ensure-stage
 
 destroy: ensure-stage
 	npm run iac -- --action destroy --env $(STAGE) --confirm-destroy $(STACK_NAME)
+
+## ── Pipeline (Engineer 3) ──────────────────────────────────────────
+
+deploy-pipeline: ensure-stage
+	@echo "Deploying full indexing pipeline ($(STAGE))..."
+	bash infra/scripts/deploy-all-pipeline.sh $(STAGE)
+
+destroy-pipeline: ensure-stage
+	npm run iac:pipeline -- --action destroy --env $(STAGE) --confirm-destroy solo-vault
+
+upload-dataset: ensure-stage
+	python services/indexer/scripts/upload_dataset.py \
+		--bucket solo-vault-vault-$(STAGE) --no-endpoint

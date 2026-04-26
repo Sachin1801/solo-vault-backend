@@ -1,0 +1,434 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Solo Vault — Pipeline Lambda functions + IAM roles + ECR repos.
+  Deploys: fn-validate, fn-download-parse, fn-chunk, fn-store, sqs-starter.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    Default: solo-vault
+  Environment:
+    Type: String
+    Default: dev
+  VpcId:
+    Type: String
+    Description: VPC ID from shared-network stack
+  PrivateSubnetA:
+    Type: String
+    Description: Private subnet A ID
+  PrivateSubnetB:
+    Type: String
+    Description: Private subnet B ID
+  LambdaSecurityGroup:
+    Type: String
+    Description: Lambda security group ID
+  IndexQueueArn:
+    Type: String
+    Description: SQS index queue ARN
+  IndexQueueUrl:
+    Type: String
+    Description: SQS index queue URL
+  StateMachineArn:
+    Type: String
+    Description: Step Functions state machine ARN
+  DbSecretArn:
+    Type: String
+    Description: Secrets Manager ARN for DB credentials
+    Default: ''
+  S3BucketName:
+    Type: String
+    Default: solo-vault-vault-dev
+
+Resources:
+  # =====================================================================
+  # ECR Repositories (for container-image Lambdas and ECS)
+  # =====================================================================
+  EcrDownloadParse:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectPrefix}-fn-download-parse-${Environment}'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}
+
+  EcrEmbed:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${ProjectPrefix}-fn-embed-${Environment}'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}
+
+  # =====================================================================
+  # IAM Role — shared by all pipeline Lambdas
+  # =====================================================================
+  PipelineLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectPrefix}-pipeline-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:HeadObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !Ref IndexQueueArn
+        - PolicyName: StepFunctionsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref StateMachineArn
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: '*'
+
+  # =====================================================================
+  # IAM Role — ECS task execution role
+  # =====================================================================
+  EcsTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectPrefix}-ecs-exec-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # =====================================================================
+  # IAM Role — ECS task role (what the container can do)
+  # =====================================================================
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectPrefix}-ecs-task-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # =====================================================================
+  # Lambda: SQS Starter (reads SQS, starts Step Functions execution)
+  # =====================================================================
+  SqsStarterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectPrefix}-sqs-starter-${Environment}'
+      Runtime: python3.12
+      Handler: index.handler
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt PipelineLambdaRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref StateMachineArn
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          sfn = boto3.client("stepfunctions")
+          SFN_ARN = os.environ["STATE_MACHINE_ARN"]
+
+          def handler(event, context):
+              for record in event.get("Records", []):
+                  body = json.loads(record["body"])
+                  # S3 event notification wraps in Records
+                  for s3_record in body.get("Records", [body]):
+                      s3_info = s3_record.get("s3", {})
+                      bucket = s3_info.get("bucket", {}).get("name", "")
+                      key = s3_info.get("object", {}).get("key", "")
+                      size = s3_info.get("object", {}).get("size", 0)
+                      if not bucket or not key:
+                          continue
+                      entry_id = key.replace("/", "-")
+                      sfn_input = {
+                          "entry_id": entry_id,
+                          "user_id": key.split("/")[1] if "/" in key else "unknown",
+                          "s3_key": key,
+                          "bucket": bucket,
+                          "file_name": key.split("/")[-1],
+                          "mime": "application/octet-stream",
+                          "kind": "unsorted",
+                          "subkind": "",
+                          "size_bytes": size,
+                          "title": key.split("/")[-1],
+                          "classifier_confidence": 0.5,
+                      }
+                      sfn.start_execution(
+                          stateMachineArn=SFN_ARN,
+                          name=entry_id[:80],
+                          input=json.dumps(sfn_input),
+                      )
+              return {"statusCode": 200}
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  SqsStarterEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !Ref IndexQueueArn
+      FunctionName: !Ref SqsStarterFunction
+      BatchSize: 10
+      Enabled: true
+
+  # =====================================================================
+  # Lambda: fn-validate
+  # =====================================================================
+  FnValidate:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectPrefix}-fn-validate-${Environment}'
+      Runtime: python3.12
+      Handler: handler.handler
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt PipelineLambdaRole.Arn
+      Environment:
+        Variables:
+          S3_REGION: us-east-1
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        # Placeholder — replaced by actual zip upload via deploy script
+        ZipFile: |
+          def handler(event, context):
+              raise NotImplementedError("Deploy actual handler.py via update-code")
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  # =====================================================================
+  # Lambda: fn-chunk
+  # =====================================================================
+  FnChunk:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectPrefix}-fn-chunk-${Environment}'
+      Runtime: python3.12
+      Handler: handler.handler
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt PipelineLambdaRole.Arn
+      Environment:
+        Variables:
+          S3_REGION: us-east-1
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise NotImplementedError("Deploy actual handler.py via update-code")
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  # =====================================================================
+  # Lambda: fn-download-parse (container image — created empty, updated later)
+  # =====================================================================
+  FnDownloadParse:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectPrefix}-fn-download-parse-${Environment}'
+      PackageType: Image
+      MemorySize: 2048
+      Timeout: 900
+      Role: !GetAtt PipelineLambdaRole.Arn
+      Environment:
+        Variables:
+          S3_REGION: us-east-1
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrDownloadParse}:latest'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  # =====================================================================
+  # Lambda: fn-store (needs VPC for RDS access)
+  # =====================================================================
+  FnStore:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectPrefix}-fn-store-${Environment}'
+      Runtime: python3.12
+      Handler: handler.handler
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt PipelineLambdaRole.Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          S3_REGION: us-east-1
+          S3_BUCKET: !Ref S3BucketName
+          DB_SECRET_ARN: !Ref DbSecretArn
+          CHUNKER_VERSION: '1'
+          EMBEDDING_MODEL: BAAI/bge-m3
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise NotImplementedError("Deploy actual handler.py via update-code")
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  # =====================================================================
+  # ECS Cluster + Task Definition for fn-embed
+  # =====================================================================
+  EmbedCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectPrefix}-embed-cluster-${Environment}'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  EmbedLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectPrefix}-fn-embed-${Environment}'
+      RetentionInDays: 14
+
+  EmbedTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectPrefix}-fn-embed-${Environment}'
+      Cpu: '2048'
+      Memory: '4096'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: embed
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrEmbed}:latest'
+          Essential: true
+          Environment:
+            - Name: S3_REGION
+              Value: us-east-1
+            - Name: S3_BUCKET
+              Value: !Ref S3BucketName
+            - Name: EMBEDDING_MODEL
+              Value: BAAI/bge-m3
+            - Name: EMBEDDING_DIM
+              Value: '1024'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref EmbedLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: embed
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+Outputs:
+  PipelineLambdaRoleArn:
+    Value: !GetAtt PipelineLambdaRole.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-pipeline-lambda-role-arn-${Environment}'
+  FnValidateArn:
+    Value: !GetAtt FnValidate.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-fn-validate-arn-${Environment}'
+  FnDownloadParseArn:
+    Value: !GetAtt FnDownloadParse.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-fn-download-parse-arn-${Environment}'
+  FnChunkArn:
+    Value: !GetAtt FnChunk.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-fn-chunk-arn-${Environment}'
+  FnStoreArn:
+    Value: !GetAtt FnStore.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-fn-store-arn-${Environment}'
+  EcsClusterArn:
+    Value: !GetAtt EmbedCluster.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-embed-cluster-arn-${Environment}'
+  EmbedTaskDefinitionArn:
+    Value: !Ref EmbedTaskDefinition
+    Export:
+      Name: !Sub '${ProjectPrefix}-embed-taskdef-arn-${Environment}'
+  EcrDownloadParseUri:
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrDownloadParse}'
+  EcrEmbedUri:
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrEmbed}'

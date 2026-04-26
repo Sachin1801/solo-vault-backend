@@ -15,9 +15,14 @@
   },
   "scripts": {
     "iac": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy.ts",
+    "iac:pipeline": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy-pipeline.ts",
     "deploy": "npm run iac -- --env dev",
     "deploy:staging": "npm run iac -- --env staging",
+    "deploy:pipeline": "npm run iac:pipeline -- --env dev",
+    "deploy:pipeline:staging": "npm run iac:pipeline -- --env staging",
     "destroy": "npm run iac -- --action destroy --env dev",
-    "destroy:staging": "npm run iac -- --action destroy --env staging"
+    "destroy:staging": "npm run iac -- --action destroy --env staging",
+    "destroy:pipeline": "npm run iac:pipeline -- --action destroy --env dev --confirm-destroy solo-vault",
+    "destroy:pipeline:staging": "npm run iac:pipeline -- --action destroy --env staging --confirm-destroy solo-vault"
   }
 }

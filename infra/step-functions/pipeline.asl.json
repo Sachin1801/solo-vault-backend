@@ -1,0 +1,231 @@
+{
+  "Comment": "Solo Vault Indexing Pipeline — 5-stage document processing",
+  "StartAt": "Validate",
+  "States": {
+    "Validate": {
+      "Type": "Task",
+      "Resource": "${FnValidateArn}",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "CheckS3NotFound"
+        }
+      ],
+      "Next": "DownloadParse"
+    },
+
+    "CheckS3NotFound": {
+      "Type": "Choice",
+      "Comment": "Route S3_NOT_FOUND to MarkDeleted, everything else to MarkFailed",
+      "Choices": [
+        {
+          "Variable": "$.error.Cause",
+          "StringMatches": "*S3_NOT_FOUND*",
+          "Next": "MarkDeleted"
+        }
+      ],
+      "Default": "MarkFailed"
+    },
+
+    "DownloadParse": {
+      "Type": "Task",
+      "Resource": "${FnDownloadParseArn}",
+      "ResultPath": "$",
+      "TimeoutSeconds": 900,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "CheckAlreadyIndexed"
+        }
+      ],
+      "Next": "Chunk"
+    },
+
+    "CheckAlreadyIndexed": {
+      "Type": "Choice",
+      "Comment": "Route ALREADY_INDEXED to CloneFromSource, else MarkFailed",
+      "Choices": [
+        {
+          "Variable": "$.error.Cause",
+          "StringMatches": "*ALREADY_INDEXED*",
+          "Next": "CloneFromSource"
+        }
+      ],
+      "Default": "MarkFailed"
+    },
+
+    "Chunk": {
+      "Type": "Task",
+      "Resource": "${FnChunkArn}",
+      "ResultPath": "$",
+      "TimeoutSeconds": 120,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "MarkFailed"
+        }
+      ],
+      "Next": "PrepareEmbedInput"
+    },
+
+    "PrepareEmbedInput": {
+      "Type": "Pass",
+      "Comment": "Ensure chunks are in S3 for ECS task (write inline chunks to S3 if needed)",
+      "Parameters": {
+        "entry_id.$": "$.entry_id",
+        "user_id.$": "$.user_id",
+        "bucket.$": "$.bucket",
+        "s3_key.$": "$.s3_key",
+        "file_name.$": "$.file_name",
+        "kind.$": "$.kind",
+        "subkind.$": "$.subkind",
+        "file_hash.$": "$.file_hash",
+        "chunk_count.$": "$.chunk_count",
+        "chunks_s3_key.$": "$.chunks_s3_key",
+        "embeddings_s3_key.$": "States.Format('pipeline/{}/embeddings.json', $.entry_id)"
+      },
+      "Next": "Embed"
+    },
+
+    "Embed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${EcsClusterArn}",
+        "TaskDefinition": "${EmbedTaskDefArn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": "${PrivateSubnets}",
+            "SecurityGroups": ["${LambdaSecurityGroup}"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "embed",
+              "Environment": [
+                { "Name": "INPUT_S3_KEY", "Value.$": "$.chunks_s3_key" },
+                { "Name": "OUTPUT_S3_KEY", "Value.$": "$.embeddings_s3_key" },
+                { "Name": "ENTRY_ID", "Value.$": "$.entry_id" },
+                { "Name": "S3_BUCKET", "Value.$": "$.bucket" }
+              ]
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.ecsResult",
+      "TimeoutSeconds": 600,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "MaxAttempts": 1,
+          "IntervalSeconds": 10,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "MarkFailed"
+        }
+      ],
+      "Next": "Store"
+    },
+
+    "Store": {
+      "Type": "Task",
+      "Resource": "${FnStoreArn}",
+      "Parameters": {
+        "action": "store",
+        "entry_id.$": "$.entry_id",
+        "user_id.$": "$.user_id",
+        "file_hash.$": "$.file_hash",
+        "embeddings_s3_key.$": "$.embeddings_s3_key",
+        "text_s3_key.$": "$.text_s3_key",
+        "chunks_s3_key.$": "$.chunks_s3_key"
+      },
+      "ResultPath": "$",
+      "TimeoutSeconds": 120,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "MaxAttempts": 3,
+          "IntervalSeconds": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "MarkFailed"
+        }
+      ],
+      "End": true
+    },
+
+    "CloneFromSource": {
+      "Type": "Task",
+      "Resource": "${FnStoreArn}",
+      "Parameters": {
+        "action": "clone",
+        "entry_id.$": "$.entry_id",
+        "user_id.$": "$.user_id",
+        "file_hash.$": "$.file_hash"
+      },
+      "End": true
+    },
+
+    "MarkDeleted": {
+      "Type": "Task",
+      "Resource": "${FnStoreArn}",
+      "Parameters": {
+        "action": "mark_deleted",
+        "entry_id.$": "$.entry_id"
+      },
+      "End": true
+    },
+
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "${FnStoreArn}",
+      "Parameters": {
+        "action": "mark_failed",
+        "entry_id.$": "$.entry_id",
+        "error.$": "$.error"
+      },
+      "End": true
+    }
+  }
+}

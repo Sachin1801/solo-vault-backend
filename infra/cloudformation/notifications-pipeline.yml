@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Solo Vault — EventBridge + SNS for pipeline progress notifications.
+  Step Functions state changes -> EventBridge rule -> SNS topic -> ws-notify Lambda.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    Default: solo-vault
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  StateMachineArn:
+    Type: String
+    Description: ARN of the index pipeline state machine
+
+Resources:
+  # -----------------------------------------------------------------------
+  # SNS topic for indexing notifications
+  # -----------------------------------------------------------------------
+  IndexNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectPrefix}-index-notifications-${Environment}'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+  # -----------------------------------------------------------------------
+  # EventBridge rule: capture Step Functions execution status changes
+  # -----------------------------------------------------------------------
+  PipelineStatusRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectPrefix}-pipeline-status-${Environment}'
+      Description: Capture Step Functions pipeline execution status changes
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.states
+        detail-type:
+          - Step Functions Execution Status Change
+        detail:
+          stateMachineArn:
+            - !Ref StateMachineArn
+          status:
+            - SUCCEEDED
+            - FAILED
+            - TIMED_OUT
+            - ABORTED
+      Targets:
+        - Id: NotifySNS
+          Arn: !Ref IndexNotificationTopic
+
+  # -----------------------------------------------------------------------
+  # Allow EventBridge to publish to SNS
+  # -----------------------------------------------------------------------
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref IndexNotificationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref IndexNotificationTopic
+
+Outputs:
+  NotificationTopicArn:
+    Description: SNS topic ARN for pipeline notifications
+    Value: !Ref IndexNotificationTopic
+    Export:
+      Name: !Sub '${ProjectPrefix}-index-notifications-arn-${Environment}'
+
+  PipelineStatusRuleArn:
+    Description: EventBridge rule ARN
+    Value: !GetAtt PipelineStatusRule.Arn

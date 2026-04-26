@@ -13,10 +13,22 @@ test-unit:
 		tests/test_validate.py tests/test_parse.py tests/test_cache.py -v
 
 bench:
+	docker compose up -d app --wait
+	docker compose run --rm app python scripts/benchmark.py \
+		--group pdf_native --limit 3 --out results_latest.json --api http://app:8000
+
+bench-all:
+	docker compose up -d app --wait
 	docker compose run --rm app python scripts/benchmark.py \
 		--group all --limit 3 --out results_latest.json --api http://app:8000
 
 bulk:
+	docker compose up -d app --wait
+	docker compose run --rm app python scripts/bulk_index.py \
+		--group pdf_native --limit 10 --concurrency 2 --api http://app:8000
+
+bulk-all:
+	docker compose up -d app --wait
 	docker compose run --rm app python scripts/bulk_index.py \
 		--group all --limit 10 --concurrency 2 --api http://app:8000
 

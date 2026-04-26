@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Solo Vault — Step Functions state machine for the indexing pipeline.
+  Orchestrates: validate -> download+parse -> chunk -> embed (ECS) -> store.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    Default: solo-vault
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  FnValidateArn:
+    Type: String
+    Description: ARN of the validate Lambda function
+  FnDownloadParseArn:
+    Type: String
+    Description: ARN of the download+parse Lambda function
+  FnChunkArn:
+    Type: String
+    Description: ARN of the chunk Lambda function
+  FnStoreArn:
+    Type: String
+    Description: ARN of the store Lambda function
+  EcsClusterArn:
+    Type: String
+    Description: ARN of the ECS cluster for embed tasks
+  EmbedTaskDefArn:
+    Type: String
+    Description: ARN of the embed ECS task definition
+  PrivateSubnets:
+    Type: CommaDelimitedList
+    Description: Private subnet IDs for ECS tasks
+  LambdaSecurityGroup:
+    Type: String
+    Description: Security group ID for Lambda/ECS
+
+Resources:
+  # -----------------------------------------------------------------------
+  # IAM role for Step Functions
+  # -----------------------------------------------------------------------
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectPrefix}-sfn-pipeline-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambdas
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Ref FnValidateArn
+                  - !Ref FnDownloadParseArn
+                  - !Ref FnChunkArn
+                  - !Ref FnStoreArn
+        - PolicyName: RunEcsTasks
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                  - ecs:StopTask
+                  - ecs:DescribeTasks
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - events:PutTargets
+                  - events:PutRule
+                  - events:DescribeRule
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+
+  # -----------------------------------------------------------------------
+  # State machine
+  # -----------------------------------------------------------------------
+  IndexPipeline:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${ProjectPrefix}-index-pipeline-${Environment}'
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt StateMachineRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Solo Vault Indexing Pipeline",
+          "StartAt": "Validate",
+          "States": {
+            "Validate": {
+              "Type": "Task",
+              "Resource": "${FnValidateArn}",
+              "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "IntervalSeconds": 2, "BackoffRate": 2}],
+              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "CheckS3NotFound"}],
+              "Next": "DownloadParse"
+            },
+            "CheckS3NotFound": {
+              "Type": "Choice",
+              "Choices": [{"Variable": "$.error.Cause", "StringMatches": "*S3_NOT_FOUND*", "Next": "MarkDeleted"}],
+              "Default": "MarkFailed"
+            },
+            "DownloadParse": {
+              "Type": "Task",
+              "Resource": "${FnDownloadParseArn}",
+              "TimeoutSeconds": 900,
+              "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "IntervalSeconds": 3, "BackoffRate": 2}],
+              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "CheckAlreadyIndexed"}],
+              "Next": "Chunk"
+            },
+            "CheckAlreadyIndexed": {
+              "Type": "Choice",
+              "Choices": [{"Variable": "$.error.Cause", "StringMatches": "*ALREADY_INDEXED*", "Next": "CloneFromSource"}],
+              "Default": "MarkFailed"
+            },
+            "Chunk": {
+              "Type": "Task",
+              "Resource": "${FnChunkArn}",
+              "TimeoutSeconds": 120,
+              "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "IntervalSeconds": 2, "BackoffRate": 2}],
+              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MarkFailed"}],
+              "Next": "Embed"
+            },
+            "Embed": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::ecs:runTask.sync",
+              "Parameters": {
+                "LaunchType": "FARGATE",
+                "Cluster": "${EcsClusterArn}",
+                "TaskDefinition": "${EmbedTaskDefArn}",
+                "NetworkConfiguration": {
+                  "AwsvpcConfiguration": {
+                    "Subnets": ${PrivateSubnets},
+                    "SecurityGroups": ["${LambdaSecurityGroup}"],
+                    "AssignPublicIp": "DISABLED"
+                  }
+                },
+                "Overrides": {
+                  "ContainerOverrides": [{
+                    "Name": "embed",
+                    "Environment": [
+                      {"Name": "INPUT_S3_KEY", "Value.$": "$.chunks_s3_key"},
+                      {"Name": "OUTPUT_S3_KEY", "Value.$": "States.Format('pipeline/{}/embeddings.json', $.entry_id)"},
+                      {"Name": "ENTRY_ID", "Value.$": "$.entry_id"},
+                      {"Name": "S3_BUCKET", "Value.$": "$.bucket"}
+                    ]
+                  }]
+                }
+              },
+              "ResultPath": "$.ecsResult",
+              "TimeoutSeconds": 600,
+              "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 1, "IntervalSeconds": 10, "BackoffRate": 2}],
+              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MarkFailed"}],
+              "Next": "Store"
+            },
+            "Store": {
+              "Type": "Task",
+              "Resource": "${FnStoreArn}",
+              "Parameters": {
+                "action": "store",
+                "entry_id.$": "$.entry_id",
+                "user_id.$": "$.user_id",
+                "file_hash.$": "$.file_hash",
+                "embeddings_s3_key.$": "States.Format('pipeline/{}/embeddings.json', $.entry_id)"
+              },
+              "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 3, "IntervalSeconds": 2, "BackoffRate": 2}],
+              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MarkFailed"}],
+              "End": true
+            },
+            "CloneFromSource": {
+              "Type": "Task",
+              "Resource": "${FnStoreArn}",
+              "Parameters": {"action": "clone", "entry_id.$": "$.entry_id", "user_id.$": "$.user_id", "file_hash.$": "$.file_hash"},
+              "End": true
+            },
+            "MarkDeleted": {
+              "Type": "Task",
+              "Resource": "${FnStoreArn}",
+              "Parameters": {"action": "mark_deleted", "entry_id.$": "$.entry_id"},
+              "End": true
+            },
+            "MarkFailed": {
+              "Type": "Task",
+              "Resource": "${FnStoreArn}",
+              "Parameters": {"action": "mark_failed", "entry_id.$": "$.entry_id"},
+              "End": true
+            }
+          }
+        }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  StateMachineArn:
+    Description: ARN of the indexing pipeline state machine
+    Value: !Ref IndexPipeline
+    Export:
+      Name: !Sub '${ProjectPrefix}-sfn-pipeline-arn-${Environment}'
