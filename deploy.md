@@ -150,11 +150,32 @@ inside the `rds` stack — no manual step needed.
 
 ## Running the database schema migration
 
-After the `rds` stack is up, run the schema migration (creates extensions, tables,
-and indexes from `db/schema.sql`):
+After the `rds` stack is `CREATE_COMPLETE`, apply the schema:
 
 ```bash
-# TODO: migration runner script — coming in a follow-up commit on this branch.
-# The runner deploys a one-shot Lambda into the Lambda SG, reads the
-# db-credentials secret, applies db/schema.sql, and tears down.
+npm run migrate:dev
+# or
+npm run migrate:staging
 ```
+
+To apply a different SQL file (e.g. a future migration):
+
+```bash
+npm run migrate -- --env dev --file db/migrations/001_example.sql
+```
+
+### What the migration runner does
+
+RDS lives in private subnets, so you can't `psql` from your laptop. The
+`migrate` script spins up a one-shot Lambda inside the Lambda SG to do the
+work from inside the VPC:
+
+1. Resolves network + secret ARN from CloudFormation exports
+2. Bundles `infra/lambda/db-migrate/handler.ts` with `esbuild`, zips it
+3. Creates a short-lived IAM role (VPC access + read on `db-credentials`)
+4. Deploys the Lambda into both private subnets + Lambda SG
+5. Invokes synchronously with the SQL payload, prints back the created
+   extensions and tables
+6. Deletes the Lambda + role — nothing persistent left behind
+
+The schema uses `IF NOT EXISTS` throughout, so re-running is safe.

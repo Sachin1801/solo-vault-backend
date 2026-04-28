@@ -6,3 +6,6 @@ node_modules/
 .vscode/
 
 *.docx
+
+# Lambda bundle output (created + cleaned up by infra/scripts/migrate.ts)
+infra/lambda/**/.build/
