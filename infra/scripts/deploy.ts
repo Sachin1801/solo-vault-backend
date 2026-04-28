@@ -16,9 +16,9 @@ import {
 
 type Environment = "dev" | "staging";
 
-type StackName = "shared-network" | "secrets";
+type StackName = "shared-network" | "secrets" | "rds";
 
-const STACK_NAMES: readonly StackName[] = ["shared-network", "secrets"];
+const STACK_NAMES: readonly StackName[] = ["shared-network", "secrets", "rds"];
 
 type StackConfig = {
   stack_name: string;

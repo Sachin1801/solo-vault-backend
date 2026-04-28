@@ -97,11 +97,21 @@ Resources:
 Outputs:
   VpcId:
     Value: !Ref SharedVpc
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
   PrivateSubnetAId:
     Value: !Ref PrivateSubnetA
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
   PrivateSubnetBId:
     Value: !Ref PrivateSubnetB
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
   LambdaSecurityGroupId:
     Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-sg-id"
   RdsSecurityGroupId:
     Value: !Ref RdsSecurityGroup
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-sg-id"
