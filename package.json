@@ -6,12 +6,20 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/node": "^22.15.3",
+    "@types/pg": "^8.11.0",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@aws-sdk/client-cloudformation": "^3.908.0"
+    "@aws-sdk/client-cloudformation": "^3.908.0",
+    "@aws-sdk/client-iam": "^3.908.0",
+    "@aws-sdk/client-lambda": "^3.908.0",
+    "@aws-sdk/client-secrets-manager": "^3.908.0",
+    "adm-zip": "^0.5.16",
+    "pg": "^8.13.0"
   },
   "scripts": {
     "iac": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy.ts",
@@ -24,5 +32,13 @@
     "destroy:staging": "npm run iac -- --action destroy --env staging",
     "destroy:pipeline": "npm run iac:pipeline -- --action destroy --env dev --confirm-destroy solo-vault",
     "destroy:pipeline:staging": "npm run iac:pipeline -- --action destroy --env staging --confirm-destroy solo-vault"
+    "iac:apigw": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy-api-gateway.ts",
+    "deploy:apigw": "npm run iac:apigw -- --env dev",
+    "deploy:apigw:staging": "npm run iac:apigw -- --env staging",
+    "destroy:apigw": "npm run iac:apigw -- --action destroy --env dev",
+    "destroy:apigw:staging": "npm run iac:apigw -- --action destroy --env staging",
+    "migrate": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/migrate.ts",
+    "migrate:dev": "npm run migrate -- --env dev",
+    "migrate:staging": "npm run migrate -- --env staging"
   }
 }

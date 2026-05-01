@@ -1,17 +1,20 @@
 SHELL := /bin/bash
 
 STAGE ?=
-STACK_NAME := solo-vault-shared-network-$(STAGE)
+STACK ?= shared-network
+STACK_NAME := solo-vault-$(STACK)-$(STAGE)
 
 .PHONY: help install deploy destroy ensure-stage deploy-pipeline destroy-pipeline upload-dataset
 
 help:
 	@echo "Usage:"
 	@echo "  make install"
-	@echo "  make deploy STAGE=dev|staging"
-	@echo "  make destroy STAGE=dev|staging"
+	@echo "  make deploy  STAGE=dev|staging [STACK=shared-network|secrets|rds]"
+	@echo "  make destroy STAGE=dev|staging [STACK=shared-network|secrets|rds]"
+	@echo ""
+	@echo "STACK defaults to shared-network."
 
-ensure-stage:
+ensure-args:
 	@if [ -z "$(STAGE)" ]; then \
 		echo "Error: STAGE is required. Use STAGE=dev or STAGE=staging."; \
 		exit 1; \
@@ -20,12 +23,16 @@ ensure-stage:
 		echo "Error: invalid STAGE '$(STAGE)'. Allowed values: dev, staging."; \
 		exit 1; \
 	fi
+	@if [ "$(STACK)" != "shared-network" ] && [ "$(STACK)" != "secrets" ] && [ "$(STACK)" != "rds" ]; then \
+		echo "Error: invalid STACK '$(STACK)'. Allowed values: shared-network, secrets, rds."; \
+		exit 1; \
+	fi
 
 install:
 	npm install
 
-deploy: ensure-stage
-	npm run iac -- --env $(STAGE)
+deploy: ensure-args
+	npm run iac -- --env $(STAGE) --stack $(STACK)
 
 destroy: ensure-stage
 	npm run iac -- --action destroy --env $(STAGE) --confirm-destroy $(STACK_NAME)
@@ -42,3 +49,5 @@ destroy-pipeline: ensure-stage
 upload-dataset: ensure-stage
 	python services/indexer/scripts/upload_dataset.py \
 		--bucket solo-vault-vault-$(STAGE) --no-endpoint
+destroy: ensure-args
+	npm run iac -- --action destroy --env $(STAGE) --stack $(STACK) --confirm-destroy $(STACK_NAME)
