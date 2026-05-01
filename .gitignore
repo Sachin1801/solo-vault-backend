@@ -9,3 +9,4 @@ node_modules/
 
 # Lambda bundle output (created + cleaned up by infra/scripts/migrate.ts)
 infra/lambda/**/.build/
+.envrc

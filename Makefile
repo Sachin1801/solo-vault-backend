@@ -9,8 +9,8 @@ STACK_NAME := solo-vault-$(STACK)-$(STAGE)
 help:
 	@echo "Usage:"
 	@echo "  make install"
-	@echo "  make deploy  STAGE=dev|staging [STACK=shared-network|secrets|rds]"
-	@echo "  make destroy STAGE=dev|staging [STACK=shared-network|secrets|rds]"
+	@echo "  make deploy  STAGE=dev|staging [STACK=shared-network|secrets|rds|network-endpoints|lambda-artifacts]"
+	@echo "  make destroy STAGE=dev|staging [STACK=shared-network|secrets|rds|network-endpoints|lambda-artifacts]"
 	@echo ""
 	@echo "STACK defaults to shared-network."
 
@@ -23,10 +23,10 @@ ensure-args:
 		echo "Error: invalid STAGE '$(STAGE)'. Allowed values: dev, staging."; \
 		exit 1; \
 	fi
-	@if [ "$(STACK)" != "shared-network" ] && [ "$(STACK)" != "secrets" ] && [ "$(STACK)" != "rds" ]; then \
-		echo "Error: invalid STACK '$(STACK)'. Allowed values: shared-network, secrets, rds."; \
-		exit 1; \
-	fi
+	@case "$(STACK)" in \
+		shared-network|secrets|rds|network-endpoints|lambda-artifacts) ;; \
+		*) echo "Error: invalid STACK '$(STACK)'. Allowed: shared-network, secrets, rds, network-endpoints, lambda-artifacts."; exit 1;; \
+	esac
 
 install:
 	npm install

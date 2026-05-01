@@ -20,6 +20,17 @@ Parameters:
     Type: Number
     Default: 100
     Description: Burst capacity for short spikes.
+  VaultCrudLambdaArn:
+    Type: String
+    Default: ""
+    Description: |
+      ARN of the vault-crud Lambda (API-2). When set, the 5 /vault/entries
+      methods become AWS_PROXY integrations to that Lambda. When empty
+      (default), they fall back to the original MOCK 501 behavior so this
+      template is still deployable on its own.
+
+Conditions:
+  VaultCrudWired: !Not [!Equals [!Ref VaultCrudLambdaArn, ""]]
 
 Resources:
   RestApi:
@@ -234,20 +245,26 @@ Resources:
       HttpMethod: GET
       AuthorizationType: COGNITO_USER_POOLS
       AuthorizerId: !Ref CognitoAuthorizer
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
+      Integration: !If
+        - VaultCrudWired
+        - Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VaultCrudLambdaArn}/invocations"
+        - Type: MOCK
+          RequestTemplates:
+            application/json: '{"statusCode": 501}'
+          IntegrationResponses:
+            - StatusCode: "501"
+              ResponseParameters:
+                method.response.header.Access-Control-Allow-Origin: "'*'"
+              ResponseTemplates:
+                application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses: !If
+        - VaultCrudWired
+        - - StatusCode: "200"
+        - - StatusCode: "501"
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
-      MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+              method.response.header.Access-Control-Allow-Origin: true
 
   VaultEntriesPostMethod:
     Type: AWS::ApiGateway::Method
@@ -257,20 +274,26 @@ Resources:
       HttpMethod: POST
       AuthorizationType: COGNITO_USER_POOLS
       AuthorizerId: !Ref CognitoAuthorizer
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
+      Integration: !If
+        - VaultCrudWired
+        - Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VaultCrudLambdaArn}/invocations"
+        - Type: MOCK
+          RequestTemplates:
+            application/json: '{"statusCode": 501}'
+          IntegrationResponses:
+            - StatusCode: "501"
+              ResponseParameters:
+                method.response.header.Access-Control-Allow-Origin: "'*'"
+              ResponseTemplates:
+                application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses: !If
+        - VaultCrudWired
+        - - StatusCode: "201"
+        - - StatusCode: "501"
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
-      MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+              method.response.header.Access-Control-Allow-Origin: true
 
   VaultEntriesOptionsMethod:
     Type: AWS::ApiGateway::Method
@@ -306,20 +329,26 @@ Resources:
       AuthorizerId: !Ref CognitoAuthorizer
       RequestParameters:
         method.request.path.id: true
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
+      Integration: !If
+        - VaultCrudWired
+        - Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VaultCrudLambdaArn}/invocations"
+        - Type: MOCK
+          RequestTemplates:
+            application/json: '{"statusCode": 501}'
+          IntegrationResponses:
+            - StatusCode: "501"
+              ResponseParameters:
+                method.response.header.Access-Control-Allow-Origin: "'*'"
+              ResponseTemplates:
+                application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses: !If
+        - VaultCrudWired
+        - - StatusCode: "200"
+        - - StatusCode: "501"
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
-      MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+              method.response.header.Access-Control-Allow-Origin: true
 
   VaultEntryByIdPutMethod:
     Type: AWS::ApiGateway::Method
@@ -331,20 +360,26 @@ Resources:
       AuthorizerId: !Ref CognitoAuthorizer
       RequestParameters:
         method.request.path.id: true
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
+      Integration: !If
+        - VaultCrudWired
+        - Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VaultCrudLambdaArn}/invocations"
+        - Type: MOCK
+          RequestTemplates:
+            application/json: '{"statusCode": 501}'
+          IntegrationResponses:
+            - StatusCode: "501"
+              ResponseParameters:
+                method.response.header.Access-Control-Allow-Origin: "'*'"
+              ResponseTemplates:
+                application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses: !If
+        - VaultCrudWired
+        - - StatusCode: "200"
+        - - StatusCode: "501"
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
-      MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+              method.response.header.Access-Control-Allow-Origin: true
 
   VaultEntryByIdDeleteMethod:
     Type: AWS::ApiGateway::Method
@@ -356,20 +391,26 @@ Resources:
       AuthorizerId: !Ref CognitoAuthorizer
       RequestParameters:
         method.request.path.id: true
-      Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
+      Integration: !If
+        - VaultCrudWired
+        - Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VaultCrudLambdaArn}/invocations"
+        - Type: MOCK
+          RequestTemplates:
+            application/json: '{"statusCode": 501}'
+          IntegrationResponses:
+            - StatusCode: "501"
+              ResponseParameters:
+                method.response.header.Access-Control-Allow-Origin: "'*'"
+              ResponseTemplates:
+                application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+      MethodResponses: !If
+        - VaultCrudWired
+        - - StatusCode: "200"
+        - - StatusCode: "501"
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
-      MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+              method.response.header.Access-Control-Allow-Origin: true
 
   VaultEntryByIdOptionsMethod:
     Type: AWS::ApiGateway::Method
