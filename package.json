@@ -6,12 +6,20 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/node": "^22.15.3",
+    "@types/pg": "^8.11.0",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@aws-sdk/client-cloudformation": "^3.908.0"
+    "@aws-sdk/client-cloudformation": "^3.908.0",
+    "@aws-sdk/client-iam": "^3.908.0",
+    "@aws-sdk/client-lambda": "^3.908.0",
+    "@aws-sdk/client-secrets-manager": "^3.908.0",
+    "adm-zip": "^0.5.16",
+    "pg": "^8.13.0"
   },
   "scripts": {
     "iac": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/deploy.ts",
@@ -23,6 +31,9 @@
     "deploy:apigw": "npm run iac:apigw -- --env dev",
     "deploy:apigw:staging": "npm run iac:apigw -- --env staging",
     "destroy:apigw": "npm run iac:apigw -- --action destroy --env dev",
-    "destroy:apigw:staging": "npm run iac:apigw -- --action destroy --env staging"
+    "destroy:apigw:staging": "npm run iac:apigw -- --action destroy --env staging",
+    "migrate": "node ./node_modules/tsx/dist/cli.mjs infra/scripts/migrate.ts",
+    "migrate:dev": "npm run migrate -- --env dev",
+    "migrate:staging": "npm run migrate -- --env staging"
   }
 }

@@ -21,6 +21,18 @@
       "parameters": {
         "DbUsername": "solovault"
       }
+    },
+    "rds": {
+      "stack_name": "solo-vault-rds-staging",
+      "parameters": {
+        "DbName": "solovault",
+        "DbInstanceClass": "db.t3.small",
+        "DbEngineVersion": "15.7",
+        "DbAllocatedStorage": "20",
+        "DbBackupRetentionDays": "7",
+        "DbDeletionProtection": "true",
+        "DbMultiAz": "false"
+      }
     }
   }
 }

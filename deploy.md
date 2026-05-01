@@ -12,13 +12,18 @@ under `stacks.<name>` in `infra/config/{env}.json`.
 |------------------|-----------------------------------------------|------------------------------------------------------------------------------------------------------------------|
 | `shared-network` | `infra/cloudformation/shared-network.yml`     | 1 VPC, 2 private subnets (AZ-a, AZ-b), Lambda SG, RDS SG (5432 inbound from Lambda SG only)                      |
 | `secrets`        | `infra/cloudformation/secrets.yml`            | 2 customer-managed KMS keys (S3, RDS) + aliases; 3 Secrets Manager secrets (db-credentials, embedding-api-key, cloudfront-key-pair) |
-
-No API Gateway, Lambda functions, RDS instance, Cognito, or pipeline services are deployed yet.
+| `rds`            | `infra/cloudformation/rds.yml`                | Postgres 15 instance (pgvector-capable), DB subnet group, SecretTargetAttachment filling db-credentials with host/port/dbname |
 
 ### Deployment order
 
-`shared-network` and `secrets` are independent — they can be deployed in any order.
-Later stacks (RDS, etc.) will depend on outputs exported from both.
+`shared-network` and `secrets` are independent — deploy in any order.
+`rds` depends on exports from both (subnet IDs, RDS SG, RDS KMS key, db-credentials secret), so it must be deployed after both.
+
+```
+shared-network  ┐
+                ├──►  rds
+secrets         ┘
+```
 
 ## Environments
 
@@ -59,10 +64,14 @@ make install
 ```bash
 make deploy STAGE=dev STACK=shared-network
 make deploy STAGE=dev STACK=secrets
+make deploy STAGE=dev STACK=rds
 
 make deploy STAGE=staging STACK=shared-network
 make deploy STAGE=staging STACK=secrets
+make deploy STAGE=staging STACK=rds
 ```
+
+Note: `rds` typically takes 10–15 minutes for the initial create.
 
 `STACK` defaults to `shared-network` if omitted (backwards-compatible with the
 original single-stack workflow).
@@ -134,8 +143,39 @@ aws secretsmanager put-secret-value \
 
 ### DB credentials
 
-The `db-credentials` secret is auto-populated at stack-create time with a
-random 32-character password and the configured `DbUsername`. Host, port, and
-dbname fields are left unset — INFRA-5 will attach them via
-`AWS::SecretsManager::SecretTargetAttachment` when the RDS instance is
-provisioned. No manual step needed.
+The `db-credentials` secret is auto-populated at secrets-stack-create time with a
+random 32-character password and the configured `DbUsername`. Host, port, engine,
+and dbname fields are filled in by `AWS::SecretsManager::SecretTargetAttachment`
+inside the `rds` stack — no manual step needed.
+
+## Running the database schema migration
+
+After the `rds` stack is `CREATE_COMPLETE`, apply the schema:
+
+```bash
+npm run migrate:dev
+# or
+npm run migrate:staging
+```
+
+To apply a different SQL file (e.g. a future migration):
+
+```bash
+npm run migrate -- --env dev --file db/migrations/001_example.sql
+```
+
+### What the migration runner does
+
+RDS lives in private subnets, so you can't `psql` from your laptop. The
+`migrate` script spins up a one-shot Lambda inside the Lambda SG to do the
+work from inside the VPC:
+
+1. Resolves network + secret ARN from CloudFormation exports
+2. Bundles `infra/lambda/db-migrate/handler.ts` with `esbuild`, zips it
+3. Creates a short-lived IAM role (VPC access + read on `db-credentials`)
+4. Deploys the Lambda into both private subnets + Lambda SG
+5. Invokes synchronously with the SQL payload, prints back the created
+   extensions and tables
+6. Deletes the Lambda + role — nothing persistent left behind
+
+The schema uses `IF NOT EXISTS` throughout, so re-running is safe.

@@ -21,6 +21,18 @@
       "parameters": {
         "DbUsername": "solovault"
       }
+    },
+    "rds": {
+      "stack_name": "solo-vault-rds-dev",
+      "parameters": {
+        "DbName": "solovault",
+        "DbInstanceClass": "db.t3.micro",
+        "DbEngineVersion": "15.7",
+        "DbAllocatedStorage": "20",
+        "DbBackupRetentionDays": "7",
+        "DbDeletionProtection": "false",
+        "DbMultiAz": "false"
+      }
     }
   }
 }
