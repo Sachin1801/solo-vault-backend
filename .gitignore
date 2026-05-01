@@ -1,6 +1,11 @@
 .env
+.env.local
 .DS_Store
 node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+results_latest.json
 
 .mcp*
 .vscode/

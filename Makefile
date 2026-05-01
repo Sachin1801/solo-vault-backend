@@ -4,7 +4,7 @@ STAGE ?=
 STACK ?= shared-network
 STACK_NAME := solo-vault-$(STACK)-$(STAGE)
 
-.PHONY: help install deploy destroy ensure-args
+.PHONY: help install deploy destroy ensure-stage deploy-pipeline destroy-pipeline upload-dataset
 
 help:
 	@echo "Usage:"
@@ -34,5 +34,20 @@ install:
 deploy: ensure-args
 	npm run iac -- --env $(STAGE) --stack $(STACK)
 
+destroy: ensure-stage
+	npm run iac -- --action destroy --env $(STAGE) --confirm-destroy $(STACK_NAME)
+
+## ── Pipeline (Engineer 3) ──────────────────────────────────────────
+
+deploy-pipeline: ensure-stage
+	@echo "Deploying full indexing pipeline ($(STAGE))..."
+	bash infra/scripts/deploy-all-pipeline.sh $(STAGE)
+
+destroy-pipeline: ensure-stage
+	npm run iac:pipeline -- --action destroy --env $(STAGE) --confirm-destroy solo-vault
+
+upload-dataset: ensure-stage
+	python services/indexer/scripts/upload_dataset.py \
+		--bucket solo-vault-vault-$(STAGE) --no-endpoint
 destroy: ensure-args
 	npm run iac -- --action destroy --env $(STAGE) --stack $(STACK) --confirm-destroy $(STACK_NAME)

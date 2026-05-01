@@ -1,0 +1,203 @@
+<mxfile host="app.diagrams.net" modified="2026-04-26T00:00:00.000Z" agent="draw.io" version="24.0.0" type="device">
+  <diagram id="option-a-pragmatic" name="Option A: Pragmatic">
+    <mxGraphModel dx="1400" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Title -->
+        <mxCell id="title1" value="&lt;b&gt;Option A: Pragmatic — ECS Monolith + AWS Wrappers&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;fontSize=18;" vertex="1" parent="1">
+          <mxGeometry x="300" y="10" width="520" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle1" value="Ship existing Celery pipeline on ECS Fargate. Add SQS trigger. 10 AWS services." style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;fontSize=12;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="340" y="40" width="440" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== GROUP: Client & Edge ==================== -->
+        <mxCell id="grp-client" value="Client &amp; Edge" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=5 5;fillColor=none;strokeColor=#999999;verticalAlign=top;fontStyle=1;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="20" y="80" width="200" height="320" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="solo-ide" value="&lt;b&gt;Solo IDE&lt;/b&gt;&lt;br&gt;(Client)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="55" y="130" width="120" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cloudfront" value="&lt;b&gt;CloudFront&lt;/b&gt;&lt;br&gt;CDN" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;fontColor=#ffffff;strokeColor=#7A3FDD;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="55" y="220" width="120" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== GROUP: API Layer ==================== -->
+        <mxCell id="grp-api" value="API Layer" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=5 5;fillColor=none;strokeColor=#999999;verticalAlign=top;fontStyle=1;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="250" y="80" width="250" height="320" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="apigw" value="&lt;b&gt;API Gateway&lt;/b&gt;&lt;br&gt;REST (Cognito Auth)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;fontColor=#ffffff;strokeColor=#7A3FDD;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="280" y="130" width="190" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lambda-auth" value="&lt;b&gt;Lambda&lt;/b&gt;&lt;br&gt;auth-handler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9900;fontColor=#ffffff;strokeColor=#CC7A00;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="280" y="210" width="120" height="45" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lambda-crud" value="&lt;b&gt;Lambda&lt;/b&gt;&lt;br&gt;vault-crud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9900;fontColor=#ffffff;strokeColor=#CC7A00;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="280" y="270" width="120" height="45" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lambda-files" value="&lt;b&gt;Lambda&lt;/b&gt;&lt;br&gt;vault-files" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9900;fontColor=#ffffff;strokeColor=#CC7A00;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="280" y="330" width="120" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- S3 Bucket -->
+        <mxCell id="s3" value="&lt;b&gt;S3 Bucket&lt;/b&gt;&lt;br&gt;vault-uploads" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3F8624;fontColor=#ffffff;strokeColor=#2D6B1A;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="440" y="330" width="130" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== SQS ==================== -->
+        <mxCell id="sqs" value="&lt;b&gt;SQS&lt;/b&gt;&lt;br&gt;vault-index-queue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;fontColor=#ffffff;strokeColor=#7A3FDD;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="540" y="190" width="140" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dlq" value="&lt;b&gt;SQS DLQ&lt;/b&gt;&lt;br&gt;dead-letter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;fontColor=#ffffff;strokeColor=#7A3FDD;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="540" y="260" width="140" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== GROUP: Pipeline (Monolith) ==================== -->
+        <mxCell id="grp-pipeline" value="Pipeline (Monolith)" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=5 5;fillColor=none;strokeColor=#999999;verticalAlign=top;fontStyle=1;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="710" y="80" width="310" height="340" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ecs" value="&lt;b&gt;ECS Fargate&lt;/b&gt;&lt;br&gt;Single Container" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9900;fontColor=#ffffff;strokeColor=#CC7A00;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="730" y="120" width="270" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ecs-fastapi" value="&lt;b&gt;FastAPI&lt;/b&gt; + &lt;b&gt;Celery Worker&lt;/b&gt; + &lt;b&gt;BGE-M3&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFD699;strokeColor=#CC7A00;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="730" y="170" width="270" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Pipeline stages inside ECS -->
+        <mxCell id="stg-validate" value="validate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#CC7A00;arcSize=15;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="735" y="220" width="70" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="stg-download" value="download" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#CC7A00;arcSize=15;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="810" y="220" width="70" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="stg-parse" value="parse" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#CC7A00;arcSize=15;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="885" y="220" width="55" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="stg-chunk" value="chunk" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#CC7A00;arcSize=15;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="735" y="260" width="70" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="stg-embed" value="embed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#CC7A00;arcSize=15;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="810" y="260" width="70" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="stg-store" value="store" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#CC7A00;arcSize=15;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="885" y="260" width="55" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- Pipeline stage arrows -->
+        <mxCell id="e-stg1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="stg-validate" target="stg-download" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-stg2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="stg-download" target="stg-parse" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-stg3" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="stg-parse" target="stg-chunk" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-stg4" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="stg-chunk" target="stg-embed" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-stg5" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="stg-embed" target="stg-store" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== GROUP: Data Layer ==================== -->
+        <mxCell id="grp-data" value="Data Layer" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=5 5;fillColor=none;strokeColor=#999999;verticalAlign=top;fontStyle=1;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="80" width="170" height="320" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rds" value="&lt;b&gt;RDS PostgreSQL&lt;/b&gt;&lt;br&gt;+ pgvector" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3F8624;fontColor=#ffffff;strokeColor=#2D6B1A;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="1065" y="150" width="140" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="redis" value="&lt;b&gt;ElastiCache&lt;/b&gt;&lt;br&gt;Redis (cache + pub/sub)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3F8624;fontColor=#ffffff;strokeColor=#2D6B1A;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="1065" y="230" width="140" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== GROUP: Security & Ops ==================== -->
+        <mxCell id="grp-sec" value="Security &amp; Ops" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=5 5;fillColor=none;strokeColor=#999999;verticalAlign=top;fontStyle=1;fontSize=12;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="250" y="440" width="970" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cognito" value="&lt;b&gt;Cognito&lt;/b&gt;&lt;br&gt;User Pool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DD344C;fontColor=#ffffff;strokeColor=#B82A3E;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="280" y="470" width="120" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="secrets" value="&lt;b&gt;Secrets Manager&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DD344C;fontColor=#ffffff;strokeColor=#B82A3E;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="430" y="470" width="140" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="kms" value="&lt;b&gt;KMS&lt;/b&gt;&lt;br&gt;Encryption" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DD344C;fontColor=#ffffff;strokeColor=#B82A3E;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="600" y="470" width="120" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cloudwatch" value="&lt;b&gt;CloudWatch&lt;/b&gt;&lt;br&gt;Logs + Metrics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7157B;fontColor=#ffffff;strokeColor=#C01060;arcSize=20;" vertex="1" parent="1">
+          <mxGeometry x="750" y="470" width="140" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== EDGES ==================== -->
+        <!-- Client -> CloudFront -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="solo-ide" target="cloudfront" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- CloudFront -> API GW -->
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="cloudfront" target="apigw" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- API GW -> Lambdas -->
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="apigw" target="lambda-auth" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="apigw" target="lambda-crud" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="apigw" target="lambda-files" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Lambda vault-files -> S3 -->
+        <mxCell id="e6" value="presigned upload" style="edgeStyle=orthogonalEdgeStyle;rounded=1;fontSize=9;" edge="1" source="lambda-files" target="s3" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- S3 -> SQS (event) -->
+        <mxCell id="e7" value="ObjectCreated" style="edgeStyle=orthogonalEdgeStyle;rounded=1;fontSize=9;dashed=1;" edge="1" source="s3" target="sqs" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- SQS -> DLQ -->
+        <mxCell id="e8" value="failures" style="edgeStyle=orthogonalEdgeStyle;rounded=1;fontSize=9;dashed=1;strokeColor=#CC0000;" edge="1" source="sqs" target="dlq" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- SQS -> ECS -->
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="sqs" target="ecs" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ECS -> RDS -->
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="stg-store" target="rds" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ECS -> Redis -->
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;" edge="1" source="ecs" target="redis" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

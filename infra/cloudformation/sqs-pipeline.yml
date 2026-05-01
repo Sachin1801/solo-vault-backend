@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Solo Vault — SQS queues for indexing pipeline.
+  S3 ObjectCreated events land here, then trigger Step Functions.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    Default: solo-vault
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+  # -----------------------------------------------------------------------
+  # Dead-letter queue — catches failed messages after 3 attempts
+  # -----------------------------------------------------------------------
+  IndexDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectPrefix}-index-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+  # -----------------------------------------------------------------------
+  # Main index queue — receives S3 events, consumed by SFN trigger Lambda
+  # -----------------------------------------------------------------------
+  IndexQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectPrefix}-index-queue-${Environment}'
+      VisibilityTimeout: 900  # 15 min (matches longest Lambda timeout)
+      MessageRetentionPeriod: 345600  # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt IndexDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+  # -----------------------------------------------------------------------
+  # Queue policy — allow S3 bucket to send messages
+  # -----------------------------------------------------------------------
+  IndexQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref IndexQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3SendMessage
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt IndexQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:s3:::${ProjectPrefix}-vault-${Environment}'
+
+Outputs:
+  IndexQueueArn:
+    Description: ARN of the indexing queue
+    Value: !GetAtt IndexQueue.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-index-queue-arn-${Environment}'
+
+  IndexQueueUrl:
+    Description: URL of the indexing queue
+    Value: !Ref IndexQueue
+    Export:
+      Name: !Sub '${ProjectPrefix}-index-queue-url-${Environment}'
+
+  IndexDLQArn:
+    Description: ARN of the dead-letter queue
+    Value: !GetAtt IndexDLQ.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-index-dlq-arn-${Environment}'
