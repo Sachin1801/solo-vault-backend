@@ -1,0 +1,54 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault file storage — S3 bucket for user vault files
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+
+Resources:
+  VaultFilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-files-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID:
+                Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-s3-cmk-arn"
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - PUT
+            AllowedOrigins:
+              - "*"
+            MaxAge: 3000
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  VaultFilesBucketName:
+    Value: !Ref VaultFilesBucket
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-files-bucket"
+  VaultFilesBucketArn:
+    Value: !GetAtt VaultFilesBucket.Arn
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-files-bucket-arn"
