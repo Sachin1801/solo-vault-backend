@@ -117,6 +117,21 @@ async function deployStack(client: CloudFormationClient, config: BaseConfig): Pr
   const tags = createTags(config);
   const exists = await stackExists(client, name);
 
+  // VaultCrudLambdaArn is set by infra/scripts/deploy-vault-crud.ts (API-2).
+  // If the stack already has it set to a real ARN, we don't want a plain
+  // `deploy:apigw` to reset it back to "" and break the integration. So on
+  // update, look up the existing value and reuse it via UsePreviousValue.
+  if (exists) {
+    const result = await client.send(new DescribeStacksCommand({ StackName: name }));
+    const existingParams = result.Stacks?.[0]?.Parameters ?? [];
+    const hasVaultCrudArn = existingParams.some(
+      (p) => p.ParameterKey === "VaultCrudLambdaArn"
+    );
+    if (hasVaultCrudArn) {
+      parameters.push({ ParameterKey: "VaultCrudLambdaArn", UsePreviousValue: true });
+    }
+  }
+
   if (exists) {
     try {
       console.log(`Updating stack ${name} in ${config.region}...`);

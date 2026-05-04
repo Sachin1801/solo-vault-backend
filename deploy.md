@@ -8,22 +8,31 @@ The deploy script supports multiple CloudFormation stacks via the `--stack` flag
 Each stack has a YAML template under `infra/cloudformation/` and a config entry
 under `stacks.<name>` in `infra/config/{env}.json`.
 
-| Stack            | Template                                      | What it creates                                                                                                  |
-|------------------|-----------------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| `shared-network` | `infra/cloudformation/shared-network.yml`     | 1 VPC, 2 private subnets (AZ-a, AZ-b), Lambda SG, RDS SG (5432 inbound from Lambda SG only)                      |
-| `secrets`        | `infra/cloudformation/secrets.yml`            | 2 customer-managed KMS keys (S3, RDS) + aliases; 3 Secrets Manager secrets (db-credentials, embedding-api-key, cloudfront-key-pair) |
-| `rds`            | `infra/cloudformation/rds.yml`                | Postgres 15 instance (pgvector-capable), DB subnet group, SecretTargetAttachment filling db-credentials with host/port/dbname |
+| Stack                  | Template                                         | What it creates                                                                                                  |
+|------------------------|--------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| `shared-network`       | `infra/cloudformation/shared-network.yml`        | 1 VPC, 2 private subnets (AZ-a, AZ-b), Lambda SG, RDS SG (5432 inbound from Lambda SG only)                      |
+| `secrets`              | `infra/cloudformation/secrets.yml`               | 2 customer-managed KMS keys (S3, RDS) + aliases; 3 Secrets Manager secrets (db-credentials, embedding-api-key, cloudfront-key-pair) |
+| `rds`                  | `infra/cloudformation/rds.yml`                   | Postgres 15 instance (pgvector-capable), DB subnet group, SecretTargetAttachment filling db-credentials with host/port/dbname |
+| `network-endpoints`    | `infra/cloudformation/network-endpoints.yml`     | VPC interface endpoints for Secrets Manager + CloudWatch Logs (single-AZ in private-subnet-a), endpoint SG       |
+| `lambda-artifacts`     | `infra/cloudformation/lambda-artifacts.yml`      | S3 bucket for Lambda zips with 7-day lifecycle expiration                                                        |
+| `vault-crud-lambda`    | `infra/cloudformation/vault-crud-lambda.yml`     | API-2 Lambda + IAM role + API Gateway invoke permission. **Deployed via `npm run deploy:vault-crud` (not via `make deploy`).** |
 
 ### Deployment order
 
-`shared-network` and `secrets` are independent — deploy in any order.
-`rds` depends on exports from both (subnet IDs, RDS SG, RDS KMS key, db-credentials secret), so it must be deployed after both.
-
 ```
 shared-network  ┐
-                ├──►  rds
-secrets         ┘
+                ├──► rds
+secrets         ┤
+                └──► network-endpoints  ──┐
+                                           │
+                     lambda-artifacts  ────┴──► vault-crud-lambda  ──► api-gateway re-deploy
 ```
+
+- `shared-network` and `secrets` are independent.
+- `rds` needs both (subnet IDs, RDS SG, RDS KMS, db-credentials).
+- `network-endpoints` needs `shared-network` (subnet + Lambda SG IDs).
+- `lambda-artifacts` is independent.
+- `vault-crud-lambda` needs `rds` (db-credentials secret), `network-endpoints` (so the Lambda can fetch the secret + ship logs), `lambda-artifacts` (S3 bucket for code), and `api-gateway` (invoke permission scoped to API ID).
 
 ## Environments
 
@@ -65,13 +74,32 @@ make install
 make deploy STAGE=dev STACK=shared-network
 make deploy STAGE=dev STACK=secrets
 make deploy STAGE=dev STACK=rds
+make deploy STAGE=dev STACK=network-endpoints
+make deploy STAGE=dev STACK=lambda-artifacts
 
 make deploy STAGE=staging STACK=shared-network
 make deploy STAGE=staging STACK=secrets
 make deploy STAGE=staging STACK=rds
+make deploy STAGE=staging STACK=network-endpoints
+make deploy STAGE=staging STACK=lambda-artifacts
 ```
 
 Note: `rds` typically takes 10–15 minutes for the initial create.
+
+### Application Lambdas (separate scripts, not via `make deploy`)
+
+Lambdas with bundled dependencies need a build + S3 upload step that
+CloudFormation can't do on its own. Each gets a dedicated script:
+
+```bash
+npm run deploy:vault-crud         # API-2 — vault-crud Lambda + api-gateway re-deploy
+npm run deploy:vault-crud:staging
+```
+
+The script bundles the handler, uploads the zip to the `lambda-artifacts`
+bucket, deploys the `vault-crud-lambda` stack with the new S3 key, then
+patches the `api-gateway` stack to point its 5 `/vault/entries` methods at
+the freshly-deployed Lambda.
 
 `STACK` defaults to `shared-network` if omitted (backwards-compatible with the
 original single-stack workflow).

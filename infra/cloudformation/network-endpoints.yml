@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault VPC interface endpoints (Secrets Manager + CloudWatch Logs)
+
+# Why this exists:
+#   The Lambda functions live in private subnets with no NAT gateway. Without
+#   an outbound path they can't reach AWS service APIs over the internet.
+#   Interface endpoints put a private ENI inside our VPC that resolves to the
+#   AWS service over the AWS backbone — no public traffic, no NAT cost.
+#
+# Single-AZ: endpoints live only in private-subnet-a to halve hourly cost
+# (~$0.01/hr per endpoint per AZ). Lambdas using these endpoints must also
+# be deployed only into private-subnet-a — an ENI in subnet-b cannot reach
+# an endpoint that doesn't exist in subnet-b. HA can be added later by
+# putting endpoints in both subnets.
+#
+# Cost: 2 endpoints × 1 AZ × ~$7.20/mo + per-GB data ≈ $14-16/mo.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+
+Resources:
+  # Endpoint ENIs need their own SG. Allow inbound 443 from the Lambda SG so
+  # the SDK calls succeed; nothing else needs in.
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "VPC interface endpoint access (${EnvironmentName})"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SecurityGroupIngress:
+        - SourceSecurityGroupId:
+            Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-sg-id"
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          Description: HTTPS from Lambda SG to AWS service endpoints
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: "-1"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-vpce-sg"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.secretsmanager"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      # Required so the standard SDK URL (secretsmanager.us-east-1.amazonaws.com)
+      # resolves to the endpoint ENI instead of the public IP. Without this,
+      # callers would need to pass an --endpoint-url override.
+      PrivateDnsEnabled: true
+
+  CloudWatchLogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+Outputs:
+  EndpointSecurityGroupId:
+    Value: !Ref EndpointSecurityGroup
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-vpce-sg-id"
+  SecretsManagerEndpointId:
+    Value: !Ref SecretsManagerEndpoint
+  CloudWatchLogsEndpointId:
+    Value: !Ref CloudWatchLogsEndpoint
