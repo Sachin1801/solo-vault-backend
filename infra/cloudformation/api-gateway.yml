@@ -235,19 +235,14 @@ Resources:
       AuthorizationType: COGNITO_USER_POOLS
       AuthorizerId: !Ref CognitoAuthorizer
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntriesPostMethod:
     Type: AWS::ApiGateway::Method
@@ -258,19 +253,14 @@ Resources:
       AuthorizationType: COGNITO_USER_POOLS
       AuthorizerId: !Ref CognitoAuthorizer
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntriesOptionsMethod:
     Type: AWS::ApiGateway::Method
@@ -307,19 +297,14 @@ Resources:
       RequestParameters:
         method.request.path.id: true
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntryByIdPutMethod:
     Type: AWS::ApiGateway::Method
@@ -332,19 +317,14 @@ Resources:
       RequestParameters:
         method.request.path.id: true
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntryByIdDeleteMethod:
     Type: AWS::ApiGateway::Method
@@ -357,19 +337,14 @@ Resources:
       RequestParameters:
         method.request.path.id: true
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntryByIdOptionsMethod:
     Type: AWS::ApiGateway::Method
@@ -406,19 +381,14 @@ Resources:
       RequestParameters:
         method.request.path.id: true
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntryUploadOptionsMethod:
     Type: AWS::ApiGateway::Method
