@@ -7,6 +7,9 @@
     "Environment": "dev",
     "ManagedBy": "aws-sdk-js-v3"
   },
+  "api_gateway": {
+    "cognito_user_pool_arn": "arn:aws:cognito-idp:us-east-1:465443875827:userpool/us-east-1_McSNFvsJb"
+  },
   "stacks": {
     "shared-network": {
       "stack_name": "solo-vault-shared-network-dev",
