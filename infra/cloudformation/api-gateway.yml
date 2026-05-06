@@ -8,6 +8,10 @@ Parameters:
   EnvironmentName:
     Type: String
     AllowedPattern: "^[a-z0-9-]+$"
+  CognitoUserPoolArn:
+    Type: String
+    Default: ""
+    Description: Optional external Cognito User Pool ARN for API authorization. Defaults to this environment's vault Cognito stack export.
   StageName:
     Type: String
     Default: prod
@@ -20,6 +24,9 @@ Parameters:
     Type: Number
     Default: 100
     Description: Burst capacity for short spikes.
+
+Conditions:
+  HasExternalCognitoUserPoolArn: !Not [!Equals [!Ref CognitoUserPoolArn, ""]]
 
 Resources:
   RestApi:
@@ -44,8 +51,11 @@ Resources:
       RestApiId: !Ref RestApi
       Type: COGNITO_USER_POOLS
       IdentitySource: method.request.header.Authorization
-      ProviderARNs:
-        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-cognito-user-pool-arn"
+      AuthorizerResultTtlInSeconds: 0
+      ProviderARNs: !If
+        - HasExternalCognitoUserPoolArn
+        - - !Ref CognitoUserPoolArn
+        - - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-cognito-user-pool-arn"
 
   AuthResource:
     Type: AWS::ApiGateway::Resource
