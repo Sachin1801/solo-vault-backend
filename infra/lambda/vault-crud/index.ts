@@ -1,20 +1,18 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { requireAuth } from "../shared/auth.js";
-import { ensureUser } from "../shared/db.js";
 import { handleError } from "../shared/response.js";
-import { createEntry } from "./create.js";
-import { deleteEntry } from "./delete.js";
-import { getEntry } from "./get.js";
+import { requireAuth } from "../shared/auth.js";
 import { listEntries } from "./list.js";
+import { createEntry } from "./create.js";
+import { getEntry } from "./get.js";
 import { updateEntry } from "./update.js";
+import { deleteEntry } from "./delete.js";
 import { uploadEntry } from "./upload.js";
 
 export const handler = async (
-  event: APIGatewayProxyEvent,
+  event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
   try {
     const auth = requireAuth(event);
-    await ensureUser(auth.user_id, auth.email);
 
     const route = `${event.httpMethod} ${event.resource}`;
     switch (route) {

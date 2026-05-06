@@ -33,6 +33,14 @@
         "DbDeletionProtection": "false",
         "DbMultiAz": "false"
       }
+    },
+    "network-endpoints": {
+      "stack_name": "solo-vault-network-endpoints-dev",
+      "parameters": {}
+    },
+    "lambda-artifacts": {
+      "stack_name": "solo-vault-lambda-artifacts-dev",
+      "parameters": {}
     }
   }
 }

@@ -1,33 +1,34 @@
-import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { Pool } from "pg";
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand
+} from "@aws-sdk/client-secrets-manager";
 
-type DbSecret = {
+interface DbCredentials {
   host: string;
   port: number;
   dbname: string;
   username: string;
   password: string;
-};
+}
 
-// Shared Secrets Manager client. Region is picked up from the Lambda
-// execution environment automatically.
-const secretsClient = new SecretsManagerClient({});
-
-// Module-level pool: reused across warm Lambda invocations.
+// Module-level singletons survive across warm Lambda invocations. Cold start
+// pays the secret fetch + pool init; warm invocations reuse both.
 let pool: Pool | undefined;
+const secrets = new SecretsManagerClient({});
 
-async function loadCredentials(): Promise<DbSecret> {
+async function loadCredentials(): Promise<DbCredentials> {
   const secretId = process.env.DB_SECRET_ID;
   if (!secretId) {
     throw new Error("DB_SECRET_ID environment variable is not set");
   }
-  const result = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: secretId }),
+  const result = await secrets.send(
+    new GetSecretValueCommand({ SecretId: secretId })
   );
   if (!result.SecretString) {
     throw new Error(`Secret ${secretId} has no SecretString`);
   }
-  return JSON.parse(result.SecretString) as DbSecret;
+  return JSON.parse(result.SecretString) as DbCredentials;
 }
 
 export async function getPool(): Promise<Pool> {
@@ -39,30 +40,22 @@ export async function getPool(): Promise<Pool> {
     database: creds.dbname,
     user: creds.username,
     password: creds.password,
-    // Lambda concurrency × max = max DB connections. db.t3.micro allows ~87
-    // connections; max=3 leaves headroom for pipeline + future Lambdas.
+    // Lambda concurrency × max = max DB connections. db.t3.micro caps around
+    // 87 connections; conservative max=3 leaves headroom for pipeline + future
+    // Lambdas. Bump if we ever see "too many connections" in CloudWatch.
     max: 3,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: false }
   });
   return pool;
 }
 
-export async function query<T = Record<string, unknown>>(
+export async function query<T>(
   text: string,
-  params: unknown[] = [],
+  params: readonly unknown[] = []
 ): Promise<T[]> {
   const p = await getPool();
-  const result = await p.query(text, params);
+  const result = await p.query(text, params as unknown[]);
   return result.rows as T[];
-}
-
-// Upsert the user row on every authenticated request so the users table
-// stays in sync with Cognito without a separate provisioning step.
-export async function ensureUser(userId: string, email: string): Promise<void> {
-  await query(
-    `INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-    [userId, email],
-  );
 }

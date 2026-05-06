@@ -1,30 +1,46 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
-import { z } from "zod";
-import type { AuthContext } from "../shared/auth.js";
-import { query } from "../shared/db.js";
-import { ApiError } from "../shared/errors.js";
 import { ok } from "../shared/response.js";
-
-const PathSchema = z.object({ id: z.string().uuid() });
+import { ApiError } from "../shared/errors.js";
+import { query, getPool } from "../shared/db.js";
+import type { AuthContext } from "../shared/auth.js";
 
 export async function deleteEntry(
   event: APIGatewayProxyEvent,
-  auth: AuthContext,
+  auth: AuthContext
 ): Promise<APIGatewayProxyResult> {
-  const parsed = PathSchema.safeParse(event.pathParameters ?? {});
-  if (!parsed.success) {
-    throw ApiError.invalidInput("Path parameter 'id' must be a UUID");
+  const id = event.pathParameters?.id;
+  if (!id) {
+    throw ApiError.invalidInput("Path parameter {id} is required");
   }
 
-  const { id } = parsed.data;
-  const rows = await query(
-    `DELETE FROM vault_entries WHERE id = $1 AND user_id = $2 RETURNING id, s3_key`,
-    [id, auth.user_id],
-  );
+  // Two-statement transaction. vault.chunks_fts has no FK to vault.entries
+  // (matches local SQLite where chunks_fts is a virtual FTS5 table) — local
+  // store deletes from chunks_fts manually before deleting chunks. Mirror
+  // that here so we don't leak FTS rows after the entry is gone.
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM vault.chunks_fts WHERE entry_id = $1 AND user_id = $2`,
+      [id, auth.user_id]
+    );
+    const result = await client.query<{ id: string }>(
+      `DELETE FROM vault.entries
+         WHERE id = $1 AND user_id = $2
+         RETURNING id`,
+      [id, auth.user_id]
+    );
+    await client.query("COMMIT");
 
-  if (rows.length === 0) {
-    throw ApiError.entryNotFound(id);
+    if (result.rowCount === 0) {
+      throw ApiError.entryNotFound(id);
+    }
+    return ok({ deleted: true, id: result.rows[0].id });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-
-  return ok({ deleted: true, id: (rows[0] as { id: string }).id });
 }

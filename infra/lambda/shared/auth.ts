@@ -1,23 +1,26 @@
 import type { APIGatewayProxyEvent } from "aws-lambda";
 import { ApiError } from "./errors.js";
 
-export type AuthContext = {
+export interface AuthContext {
   user_id: string;
-  email: string;
-};
+  email?: string;
+}
 
-// API Gateway injects Cognito JWT claims into event.requestContext.authorizer
-// when the CognitoAuthorizer is attached to the route. Never trust a
-// client-supplied user_id — always derive identity from these claims.
+// API Gateway's Cognito authorizer puts JWT claims under
+// requestContext.authorizer.claims. `sub` is the Cognito user ID and serves
+// as our users.id PK.
 export function requireAuth(event: APIGatewayProxyEvent): AuthContext {
-  const claims = (event.requestContext.authorizer as Record<string, string> | undefined)
-    ?.claims as Record<string, string> | undefined;
+  const claims = event.requestContext.authorizer?.claims as
+    | Record<string, string>
+    | undefined;
+
   const sub = claims?.sub;
   if (!sub) {
     throw ApiError.unauthorized();
   }
+
   return {
     user_id: sub,
-    email: claims?.email ?? `${sub}@unknown.local`,
+    email: claims?.email
   };
 }
