@@ -1,17 +1,11 @@
 #!/usr/bin/env node
-// Deploys the vault-crud Lambda (API-2):
-//   1. Bundles infra/lambda/vault-crud + shared utilities into one zip
-//   2. Uploads to the lambda-artifacts S3 bucket under a content-hashed key
-//   3. Creates or updates the vault-crud-lambda CloudFormation stack with
-//      that S3 key as ArtifactsKey
-//   4. Patches the api-gateway stack: passes the new Lambda ARN so the
-//      5 /vault/entries methods switch from MOCK to AWS_PROXY
+// Build, upload, and deploy the vault-crud Lambda + CloudFormation stack.
 //
-// Step 4 only updates the VaultCrudLambdaArn parameter; everything else on
-// the api-gateway stack uses UsePreviousValue, so this won't reset other
-// params (StageName, throttle limits) to defaults.
+// Usage:
+//   npm run deploy:vault-crud          # dev
+//   npm run deploy:vault-crud:staging  # staging
+//   npm run destroy:vault-crud         # dev (requires --confirm-destroy <stack-name>)
 
-import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { build as esbuild } from "esbuild";
@@ -19,25 +13,40 @@ import AdmZip from "adm-zip";
 import {
   CloudFormationClient,
   CreateStackCommand,
+  DeleteStackCommand,
   DescribeStacksCommand,
   ListExportsCommand,
+  Parameter,
+  Tag,
   UpdateStackCommand,
   waitUntilStackCreateComplete,
-  waitUntilStackUpdateComplete
+  waitUntilStackDeleteComplete,
+  waitUntilStackUpdateComplete,
 } from "@aws-sdk/client-cloudformation";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import {
-  APIGatewayClient,
-  CreateDeploymentCommand
-} from "@aws-sdk/client-api-gateway";
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 
 type Environment = "dev" | "staging";
+type Action = "deploy" | "destroy";
+
 type BaseConfig = {
   project_prefix: string;
   environment: Environment;
   region: string;
   tags?: Record<string, string>;
 };
+
+function parseActionArg(): Action {
+  const i = process.argv.findIndex((a) => a === "--action");
+  if (i === -1 || i + 1 >= process.argv.length) return "deploy";
+  const v = process.argv[i + 1];
+  if (v !== "deploy" && v !== "destroy") {
+    throw new Error("Invalid --action value. Allowed: deploy, destroy.");
+  }
+  return v;
+}
 
 function parseEnvArg(): Environment {
   const i = process.argv.findIndex((a) => a === "--env");
@@ -51,14 +60,37 @@ function parseEnvArg(): Environment {
   return v;
 }
 
+function parseConfirmDestroyArg(expectedStackName: string): void {
+  const i = process.argv.findIndex((a) => a === "--confirm-destroy");
+  if (i === -1 || i + 1 >= process.argv.length) {
+    throw new Error(
+      `Destroy requires explicit confirmation: --confirm-destroy ${expectedStackName}`,
+    );
+  }
+  const v = process.argv[i + 1];
+  if (v !== expectedStackName) {
+    throw new Error(
+      `Destroy confirmation mismatch. Expected --confirm-destroy ${expectedStackName}`,
+    );
+  }
+}
+
 function loadConfig(env: Environment): BaseConfig {
-  const path = resolve(process.cwd(), "infra", "config", `${env}.json`);
-  return JSON.parse(readFileSync(path, "utf-8")) as BaseConfig;
+  const configPath = resolve(process.cwd(), "infra", "config", `${env}.json`);
+  return JSON.parse(readFileSync(configPath, "utf-8")) as BaseConfig;
+}
+
+function stackName(config: BaseConfig): string {
+  return `${config.project_prefix}-vault-crud-lambda-${config.environment}`;
+}
+
+function artifactKey(): string {
+  return "vault-crud/function.zip";
 }
 
 async function resolveExport(
   cfn: CloudFormationClient,
-  name: string
+  name: string,
 ): Promise<string> {
   let next: string | undefined;
   do {
@@ -70,32 +102,33 @@ async function resolveExport(
   throw new Error(`CloudFormation export "${name}" not found`);
 }
 
-async function bundleLambda(): Promise<{ zipPath: string; hash: string; cleanup: () => void }> {
-  const srcEntry = resolve(
+async function bundleVaultCrud(): Promise<{ zipPath: string; cleanup: () => void }> {
+  const entryPoint = resolve(
     process.cwd(),
     "infra",
     "lambda",
     "vault-crud",
-    "index.ts"
+    "index.ts",
   );
   const buildDir = resolve(
     process.cwd(),
     "infra",
     "lambda",
     "vault-crud",
-    ".build"
+    ".build",
   );
   mkdirSync(buildDir, { recursive: true });
   const outFile = resolve(buildDir, "index.js");
 
   await esbuild({
-    entryPoints: [srcEntry],
+    entryPoints: [entryPoint],
     bundle: true,
     platform: "node",
     target: "node20",
     format: "cjs",
     outfile: outFile,
-    external: ["@aws-sdk/*", "pg-native"]
+    // Client packages are in the Lambda nodejs20.x runtime; s3-request-presigner is not, so it gets bundled.
+    external: ["@aws-sdk/client-s3", "@aws-sdk/client-secrets-manager", "pg-native"],
   });
 
   const zip = new AdmZip();
@@ -103,230 +136,151 @@ async function bundleLambda(): Promise<{ zipPath: string; hash: string; cleanup:
   const zipPath = resolve(buildDir, "function.zip");
   zip.writeZip(zipPath);
 
-  // Hash the zip bytes so each unique build gets a unique S3 key. CFN sees
-  // a real change in ArtifactsKey and updates the Lambda code.
-  const bytes = readFileSync(zipPath);
-  const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
-
   return {
     zipPath,
-    hash,
-    cleanup: () => rmSync(buildDir, { recursive: true, force: true })
+    cleanup: () => rmSync(buildDir, { recursive: true, force: true }),
   };
 }
 
-async function stackExists(
-  cfn: CloudFormationClient,
-  stackName: string
-): Promise<boolean> {
+async function stackExists(client: CloudFormationClient, name: string): Promise<boolean> {
   try {
-    await cfn.send(new DescribeStacksCommand({ StackName: stackName }));
+    await client.send(new DescribeStacksCommand({ StackName: name }));
     return true;
   } catch (err) {
-    if (err instanceof Error && /does not exist/i.test(err.message)) {
-      return false;
-    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("does not exist")) return false;
     throw err;
   }
 }
 
-async function getStackOutput(
-  cfn: CloudFormationClient,
-  stackName: string,
-  outputKey: string
-): Promise<string> {
-  const response = await cfn.send(
-    new DescribeStacksCommand({ StackName: stackName })
-  );
-  const output = response.Stacks?.[0]?.Outputs?.find(
-    (o) => o.OutputKey === outputKey
-  );
-  if (!output?.OutputValue) {
-    throw new Error(
-      `Stack ${stackName} has no output named ${outputKey}`
-    );
+async function printOutputs(client: CloudFormationClient, name: string): Promise<void> {
+  const result = await client.send(new DescribeStacksCommand({ StackName: name }));
+  const outputs = result.Stacks?.[0]?.Outputs ?? [];
+  if (outputs.length === 0) return;
+  console.log("Stack outputs:");
+  for (const o of outputs) {
+    console.log(`  ${o.OutputKey}: ${o.OutputValue}`);
   }
-  return output.OutputValue;
 }
 
-async function deployLambdaStack(
+async function deployStack(
   cfn: CloudFormationClient,
   config: BaseConfig,
-  artifactsKey: string
-): Promise<string> {
-  const stackName = `${config.project_prefix}-vault-crud-lambda-${config.environment}`;
-  const templateBody = readFileSync(
-    resolve(process.cwd(), "infra", "cloudformation", "vault-crud-lambda.yml"),
-    "utf-8"
+  artifactsBucket: string,
+): Promise<void> {
+  const templatePath = resolve(
+    process.cwd(),
+    "infra",
+    "cloudformation",
+    "lambdas.yml",
   );
-  const parameters = [
+  const templateBody = readFileSync(templatePath, "utf-8");
+  const name = stackName(config);
+  const key = artifactKey();
+
+  const parameters: Parameter[] = [
     { ParameterKey: "ProjectPrefix", ParameterValue: config.project_prefix },
     { ParameterKey: "EnvironmentName", ParameterValue: config.environment },
-    { ParameterKey: "ArtifactsKey", ParameterValue: artifactsKey }
+    { ParameterKey: "ArtifactsBucket", ParameterValue: artifactsBucket },
+    { ParameterKey: "VaultCrudArtifactKey", ParameterValue: key },
   ];
-  const tags = Object.entries(config.tags ?? {}).map(([Key, Value]) => ({
+  const tags: Tag[] = Object.entries(config.tags ?? {}).map(([Key, Value]) => ({
     Key,
-    Value
+    Value,
   }));
-  const exists = await stackExists(cfn, stackName);
 
+  const exists = await stackExists(cfn, name);
   if (exists) {
     try {
-      console.log(`Updating ${stackName}...`);
+      console.log(`Updating stack ${name}...`);
       await cfn.send(
         new UpdateStackCommand({
-          StackName: stackName,
+          StackName: name,
           TemplateBody: templateBody,
           Parameters: parameters,
+          Tags: tags,
           Capabilities: ["CAPABILITY_NAMED_IAM"],
-          Tags: tags
-        })
+        }),
       );
-      await waitUntilStackUpdateComplete(
-        { client: cfn, maxWaitTime: 600 },
-        { StackName: stackName }
-      );
+      await waitUntilStackUpdateComplete({ client: cfn, maxWaitTime: 600 }, { StackName: name });
+      console.log(`Stack update complete: ${name}`);
     } catch (err) {
-      if (err instanceof Error && /No updates are to be performed/i.test(err.message)) {
-        console.log(`No changes for ${stackName}.`);
-      } else {
-        throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("No updates are to be performed")) {
+        console.log(`No changes detected for stack: ${name}`);
+        return;
       }
-    }
-  } else {
-    console.log(`Creating ${stackName}...`);
-    await cfn.send(
-      new CreateStackCommand({
-        StackName: stackName,
-        TemplateBody: templateBody,
-        Parameters: parameters,
-        Capabilities: ["CAPABILITY_NAMED_IAM"],
-        Tags: tags
-      })
-    );
-    await waitUntilStackCreateComplete(
-      { client: cfn, maxWaitTime: 600 },
-      { StackName: stackName }
-    );
-  }
-
-  return getStackOutput(cfn, stackName, "FunctionArn");
-}
-
-async function patchApiGateway(
-  cfn: CloudFormationClient,
-  apigw: APIGatewayClient,
-  config: BaseConfig,
-  lambdaArn: string
-): Promise<void> {
-  const stackName = `${config.project_prefix}-api-gateway-${config.environment}`;
-  const templateBody = readFileSync(
-    resolve(process.cwd(), "infra", "cloudformation", "api-gateway.yml"),
-    "utf-8"
-  );
-
-  // Pull the existing parameter list and reuse all values except
-  // VaultCrudLambdaArn — which we set to the new ARN.
-  const existing = await cfn.send(
-    new DescribeStacksCommand({ StackName: stackName })
-  );
-  const existingParams = existing.Stacks?.[0]?.Parameters ?? [];
-  const parameters = existingParams.map((p) => {
-    if (p.ParameterKey === "VaultCrudLambdaArn") {
-      return { ParameterKey: "VaultCrudLambdaArn", ParameterValue: lambdaArn };
-    }
-    return { ParameterKey: p.ParameterKey, UsePreviousValue: true };
-  });
-  // If the existing stack predates our parameter (deployed before this PR),
-  // there's no entry for VaultCrudLambdaArn in existingParams — append it.
-  if (!existingParams.some((p) => p.ParameterKey === "VaultCrudLambdaArn")) {
-    parameters.push({
-      ParameterKey: "VaultCrudLambdaArn",
-      ParameterValue: lambdaArn
-    });
-  }
-
-  try {
-    console.log(`Patching ${stackName} with vault-crud Lambda ARN...`);
-    await cfn.send(
-      new UpdateStackCommand({
-        StackName: stackName,
-        TemplateBody: templateBody,
-        Parameters: parameters
-      })
-    );
-    await waitUntilStackUpdateComplete(
-      { client: cfn, maxWaitTime: 600 },
-      { StackName: stackName }
-    );
-    console.log(`api-gateway updated.`);
-  } catch (err) {
-    if (err instanceof Error && /No updates are to be performed/i.test(err.message)) {
-      console.log(`No changes for ${stackName}.`);
-    } else {
       throw err;
     }
+  } else {
+    console.log(`Creating stack ${name}...`);
+    await cfn.send(
+      new CreateStackCommand({
+        StackName: name,
+        TemplateBody: templateBody,
+        Parameters: parameters,
+        Tags: tags,
+        Capabilities: ["CAPABILITY_NAMED_IAM"],
+      }),
+    );
+    await waitUntilStackCreateComplete({ client: cfn, maxWaitTime: 600 }, { StackName: name });
+    console.log(`Stack creation complete: ${name}`);
   }
 
-  // CFN updates the Method/Integration resources, but the live stage keeps
-  // serving the previous Deployment snapshot until something explicitly
-  // creates a new one. Force it here so the new AWS_PROXY routes go live.
-  const apiId = existing.Stacks?.[0]?.Outputs?.find(
-    (o) => o.OutputKey === "ApiId"
-  )?.OutputValue;
-  const stageName = existingParams.find(
-    (p) => p.ParameterKey === "StageName"
-  )?.ParameterValue;
-  if (!apiId || !stageName) {
-    throw new Error(
-      `Could not resolve ApiId/StageName from ${stackName} for redeploy`
-    );
+  await printOutputs(cfn, name);
+}
+
+async function destroyStack(cfn: CloudFormationClient, config: BaseConfig): Promise<void> {
+  const name = stackName(config);
+  const exists = await stackExists(cfn, name);
+  if (!exists) {
+    console.log(`Stack does not exist, nothing to destroy: ${name}`);
+    return;
   }
-  console.log(`Forcing new APIGW deployment on ${apiId}:${stageName}...`);
-  await apigw.send(
-    new CreateDeploymentCommand({
-      restApiId: apiId,
-      stageName,
-      description: `vault-crud deploy: pick up new method integrations`
-    })
-  );
+  parseConfirmDestroyArg(name);
+  console.log(`Deleting stack ${name}...`);
+  await cfn.send(new DeleteStackCommand({ StackName: name }));
+  await waitUntilStackDeleteComplete({ client: cfn, maxWaitTime: 600 }, { StackName: name });
+  console.log(`Stack deletion complete: ${name}`);
 }
 
 async function run(): Promise<void> {
+  const action = parseActionArg();
   const env = parseEnvArg();
   const config = loadConfig(env);
   const cfn = new CloudFormationClient({ region: config.region });
-  const s3 = new S3Client({ region: config.region });
-  const apigw = new APIGatewayClient({ region: config.region });
+
+  if (action === "destroy") {
+    await destroyStack(cfn, config);
+    return;
+  }
 
   const prefix = `${config.project_prefix}-${config.environment}`;
-  const bucketName = await resolveExport(
-    cfn,
-    `${prefix}-lambda-artifacts-bucket`
-  );
-  console.log(`Artifacts bucket: ${bucketName}`);
+  const artifactsBucket = await resolveExport(cfn, `${prefix}-lambda-artifacts-bucket`);
+  console.log(`Artifacts bucket: ${artifactsBucket}`);
 
-  const bundle = await bundleLambda();
+  // Build and upload
+  console.log("Building vault-crud Lambda...");
+  const { zipPath, cleanup } = await bundleVaultCrud();
   try {
-    const s3Key = `vault-crud/${bundle.hash}.zip`;
-    console.log(`Uploading zip → s3://${bucketName}/${s3Key}`);
+    const zipBytes = readFileSync(zipPath);
+    const key = artifactKey();
+    const s3 = new S3Client({ region: config.region });
+    console.log(`Uploading ${key} (${zipBytes.length} bytes) to ${artifactsBucket}...`);
     await s3.send(
       new PutObjectCommand({
-        Bucket: bucketName,
-        Key: s3Key,
-        Body: readFileSync(bundle.zipPath),
-        ContentType: "application/zip"
-      })
+        Bucket: artifactsBucket,
+        Key: key,
+        Body: zipBytes,
+        ContentType: "application/zip",
+      }),
     );
+    console.log("Upload complete.");
 
-    const lambdaArn = await deployLambdaStack(cfn, config, s3Key);
-    console.log(`vault-crud Lambda ARN: ${lambdaArn}`);
-
-    await patchApiGateway(cfn, apigw, config, lambdaArn);
-
-    console.log("\nDone. /vault/entries methods are now wired to the Lambda.");
+    // Deploy CloudFormation
+    await deployStack(cfn, config, artifactsBucket);
   } finally {
-    bundle.cleanup();
+    cleanup();
   }
 }
 

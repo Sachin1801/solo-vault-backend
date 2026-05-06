@@ -6,6 +6,7 @@ import { createEntry } from "./create.js";
 import { getEntry } from "./get.js";
 import { updateEntry } from "./update.js";
 import { deleteEntry } from "./delete.js";
+import { uploadEntry } from "./upload.js";
 
 export const handler = async (
   event: APIGatewayProxyEvent
@@ -25,6 +26,8 @@ export const handler = async (
         return await updateEntry(event, auth);
       case "DELETE /vault/entries/{id}":
         return await deleteEntry(event, auth);
+      case "POST /vault/entries/{id}/upload":
+        return await uploadEntry(event, auth);
       default:
         return handleError(new Error(`Unsupported route: ${route}`));
     }

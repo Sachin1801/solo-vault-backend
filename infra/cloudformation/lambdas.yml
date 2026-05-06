@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault Lambda functions — vault CRUD handler
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  ArtifactsBucket:
+    Type: String
+    Description: S3 bucket that holds built Lambda zip artifacts
+  VaultCrudArtifactKey:
+    Type: String
+    Description: S3 key for the vault-crud Lambda zip (e.g. vault-crud/function.zip)
+
+Resources:
+  # Logical ID matches the live stack — must not rename or CFN will try to CREATE
+  # a new role while the old physical resource still exists.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      # AWSLambdaVPCAccessExecutionRole grants:
+      #   ec2:CreateNetworkInterface, DescribeNetworkInterfaces, DeleteNetworkInterface
+      #   logs:CreateLogGroup, CreateLogStream, PutLogEvents
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: read-db-credentials
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-db-credentials-arn"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource:
+                  Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-cmk-arn"
+        - PolicyName: vault-files-s3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub
+                  - "${BucketArn}/*"
+                  - BucketArn:
+                      Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-files-bucket-arn"
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource:
+                  Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-s3-cmk-arn"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud"
+      Description: Vault CRUD API handler (GET/POST/PUT/DELETE /vault/entries)
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt ExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactsBucket
+        S3Key: !Ref VaultCrudArtifactKey
+      MemorySize: 512
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+          - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-sg-id"
+      Environment:
+        Variables:
+          DB_SECRET_ID:
+            Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-db-credentials-arn"
+          VAULT_FILES_BUCKET:
+            Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-files-bucket"
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectPrefix}-${EnvironmentName}-vault-crud"
+      RetentionInDays: 14
+
+  # Allows API Gateway to invoke this Lambda on behalf of any stage/resource.
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt Function.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*"
+
+Outputs:
+  FunctionArn:
+    Value: !GetAtt Function.Arn
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
+  FunctionName:
+    Value: !Ref Function
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-name"
