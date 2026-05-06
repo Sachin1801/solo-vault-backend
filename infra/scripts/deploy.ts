@@ -14,7 +14,7 @@ import {
   waitUntilStackUpdateComplete
 } from "@aws-sdk/client-cloudformation";
 
-type Environment = "dev" | "staging";
+type Environment = "dev" | "staging" | "prod";
 
 type StackName =
   | "shared-network"
@@ -76,12 +76,12 @@ function parseActionArg(): Action {
 function parseEnvArg(): Environment {
   const envIndex = process.argv.findIndex((arg) => arg === "--env");
   if (envIndex === -1 || envIndex + 1 >= process.argv.length) {
-    throw new Error("Missing --env argument. Use --env dev or --env staging.");
+    throw new Error("Missing --env argument. Use --env dev, --env staging, or --env prod.");
   }
 
   const envValue = process.argv[envIndex + 1];
-  if (envValue !== "dev" && envValue !== "staging") {
-    throw new Error("Invalid --env value. Allowed: dev, staging.");
+  if (envValue !== "dev" && envValue !== "staging" && envValue !== "prod") {
+    throw new Error("Invalid --env value. Allowed: dev, staging, prod.");
   }
 
   return envValue;
