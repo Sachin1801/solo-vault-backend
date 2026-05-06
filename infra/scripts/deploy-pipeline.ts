@@ -37,7 +37,7 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-type Environment = "dev" | "staging";
+type Environment = "dev" | "staging" | "prod";
 type Action = "deploy" | "destroy";
 
 interface StackDef {
@@ -222,8 +222,8 @@ async function destroyStack(client: CloudFormationClient, stackName: string): Pr
 
 async function run(): Promise<void> {
   const env = parseArg("env") as Environment;
-  if (env !== "dev" && env !== "staging") {
-    throw new Error("--env must be dev or staging");
+  if (env !== "dev" && env !== "staging" && env !== "prod") {
+    throw new Error("--env must be dev, staging, or prod");
   }
 
   const action: Action = (parseArg("action", "deploy") as Action);
