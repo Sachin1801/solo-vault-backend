@@ -21,7 +21,7 @@ import {
   waitUntilStackUpdateComplete,
 } from "@aws-sdk/client-cloudformation";
 
-type Environment = "dev" | "staging";
+type Environment = "dev" | "staging" | "prod";
 type Action = "deploy" | "destroy";
 
 function parseActionArg(): Action {
@@ -34,9 +34,9 @@ function parseActionArg(): Action {
 
 function parseEnvArg(): Environment {
   const i = process.argv.findIndex((a) => a === "--env");
-  if (i === -1 || i + 1 >= process.argv.length) throw new Error("Missing --env. Use --env dev or --env staging.");
+  if (i === -1 || i + 1 >= process.argv.length) throw new Error("Missing --env. Use --env dev, --env staging, or --env prod.");
   const v = process.argv[i + 1];
-  if (v !== "dev" && v !== "staging") throw new Error("Invalid --env. Allowed: dev, staging.");
+  if (v !== "dev" && v !== "staging" && v !== "prod") throw new Error("Invalid --env. Allowed: dev, staging, prod.");
   return v;
 }
 
