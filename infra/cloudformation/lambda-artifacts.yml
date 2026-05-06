@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Solo Vault S3 bucket for Lambda deployment artifacts
+
+# CloudFormation's inline AWS::Lambda::Function Code.ZipFile is capped at 4 KB
+# — fine for trivial inline handlers, useless for anything that bundles
+# dependencies. Application Lambdas (vault-crud, etc.) reference their code
+# from this bucket via Code.S3Bucket + Code.S3Key.
+#
+# The deploy scripts upload zips here and pass S3Key as a stack parameter.
+# Lifecycle rule expires unused zips after 7 days so we don't accumulate
+# stale artifacts; current versions of in-use zips are kept indefinitely
+# because lifecycle expiration only acts on objects, not the latest version
+# referenced by a live Lambda.
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+  EnvironmentName:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+
+Resources:
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-artifacts-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-artifacts
+            Status: Enabled
+            ExpirationInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-artifacts"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+Outputs:
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-artifacts-bucket"
+  ArtifactsBucketArn:
+    Value: !GetAtt ArtifactsBucket.Arn
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-lambda-artifacts-bucket-arn"
