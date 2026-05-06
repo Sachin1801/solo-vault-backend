@@ -16,7 +16,7 @@ import {
   waitUntilStackUpdateComplete,
 } from "@aws-sdk/client-cloudformation";
 
-type Environment = "dev" | "staging";
+type Environment = "dev" | "staging" | "prod";
 type Action = "deploy" | "destroy";
 
 type BaseConfig = {
@@ -24,6 +24,9 @@ type BaseConfig = {
   environment: Environment;
   region: string;
   tags?: Record<string, string>;
+  api_gateway?: {
+    cognito_user_pool_arn?: string;
+  };
 };
 
 function parseActionArg(): Action {
@@ -39,11 +42,11 @@ function parseActionArg(): Action {
 function parseEnvArg(): Environment {
   const i = process.argv.findIndex((a) => a === "--env");
   if (i === -1 || i + 1 >= process.argv.length) {
-    throw new Error("Missing --env argument. Use --env dev or --env staging.");
+    throw new Error("Missing --env argument. Use --env dev, --env staging, or --env prod.");
   }
   const v = process.argv[i + 1];
-  if (v !== "dev" && v !== "staging") {
-    throw new Error("Invalid --env value. Allowed: dev, staging.");
+  if (v !== "dev" && v !== "staging" && v !== "prod") {
+    throw new Error("Invalid --env value. Allowed: dev, staging, prod.");
   }
   return v;
 }
@@ -73,10 +76,17 @@ function stackName(config: BaseConfig): string {
 }
 
 function createParameters(config: BaseConfig): Parameter[] {
-  return [
+  const parameters: Parameter[] = [
     { ParameterKey: "ProjectPrefix", ParameterValue: config.project_prefix },
     { ParameterKey: "EnvironmentName", ParameterValue: config.environment },
   ];
+  if (config.api_gateway?.cognito_user_pool_arn) {
+    parameters.push({
+      ParameterKey: "CognitoUserPoolArn",
+      ParameterValue: config.api_gateway.cognito_user_pool_arn,
+    });
+  }
+  return parameters;
 }
 
 function createTags(config: BaseConfig): Tag[] {
