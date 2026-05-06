@@ -43,7 +43,7 @@ import {
   GetSecretValueCommand
 } from "@aws-sdk/client-secrets-manager";
 
-type Environment = "dev" | "staging";
+type Environment = "dev" | "staging" | "prod";
 
 type BaseConfig = {
   project_prefix: string;
@@ -54,11 +54,11 @@ type BaseConfig = {
 function parseEnvArg(): Environment {
   const i = process.argv.findIndex((a) => a === "--env");
   if (i === -1 || i + 1 >= process.argv.length) {
-    throw new Error("Missing --env argument. Use --env dev or --env staging.");
+    throw new Error("Missing --env argument. Use --env dev, --env staging, or --env prod.");
   }
   const v = process.argv[i + 1];
-  if (v !== "dev" && v !== "staging") {
-    throw new Error("Invalid --env value. Allowed: dev, staging.");
+  if (v !== "dev" && v !== "staging" && v !== "prod") {
+    throw new Error("Invalid --env value. Allowed: dev, staging, prod.");
   }
   return v;
 }
