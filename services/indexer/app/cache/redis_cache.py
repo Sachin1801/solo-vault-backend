@@ -14,12 +14,12 @@ def _get_redis() -> redis.Redis:
     return _redis
 
 
-def is_file_indexed(fhash: str) -> bool:
-    return bool(_get_redis().exists(f"cache:file:{fhash}"))
+def is_file_indexed(fhash: str, user_id: str) -> bool:
+    return bool(_get_redis().exists(f"cache:file:{user_id}:{fhash}"))
 
 
-def mark_file_indexed(fhash: str, entry_id: str, ttl_seconds: int = 86400 * 7) -> None:
-    _get_redis().set(f"cache:file:{fhash}", entry_id, ex=ttl_seconds)
+def mark_file_indexed(fhash: str, user_id: str, entry_id: str, ttl_seconds: int = 86400 * 7) -> None:
+    _get_redis().set(f"cache:file:{user_id}:{fhash}", entry_id, ex=ttl_seconds)
 
 
 def get_cached_embedding(chash: str) -> list[float] | None:
