@@ -34,7 +34,7 @@ Progress events → Redis pub/sub → WebSocket /ws/{entry_id}
 
 ### Embedding
 
-Uses **BAAI/bge-m3** (1024-dim dense vectors) running locally on CPU.  
+Uses **BAAI/bge-m3** running locally on CPU and stores 384-dim vectors to match the cloud pgvector contract.
 Chunk embeddings are cached in Redis (30-day TTL); file hashes are cached to skip re-indexing unchanged files (7-day TTL).
 
 ### Parser selection
@@ -192,7 +192,7 @@ Connection closes automatically when `step` is `done` or `failed`.
 | `S3_BUCKET`                     | `vault-local`           |                                          |
 | `S3_REGION`                     | `us-east-1`             |                                          |
 | `EMBEDDING_MODEL`               | `BAAI/bge-m3`           |                                          |
-| `EMBEDDING_DIM`                 | `1024`                  |                                          |
+| `EMBEDDING_DIM`                 | `384`                   | Cloud pgvector contract                 |
 | `S3_RATE_LIMIT_RPS`             | `50`                    | Global S3 download rate limit            |
 | `CLASSIFIER_CONFIDENCE_THRESHOLD` | `0.6`                 | Below this → UNSORTED                    |
 | `PARSER_PREFER_DOCLING`         | `true`                  | Use docling for PDF/DOCX when available  |
