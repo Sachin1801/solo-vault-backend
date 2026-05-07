@@ -4,6 +4,7 @@ import { ok } from "../shared/response.js";
 import { ApiError } from "../shared/errors.js";
 import { query } from "../shared/db.js";
 import type { AuthContext } from "../shared/auth.js";
+import { entryAccessPredicate } from "../shared/vault-authz.js";
 import {
   CLOUD_SYNC_STATES,
   ENTRY_KINDS,
@@ -83,14 +84,17 @@ export async function updateEntry(
   for (const [key, value] of Object.entries(input)) {
     sets.push(`${key} = $${p++}`);
     params.push(value);
+    if (key === "scope_project_id") {
+      sets.push(`project_id = $${p - 1}`);
+    }
   }
   params.push(id, auth.user_id);
 
   const rows = await query<VaultEntry>(
-    `UPDATE vault.entries
+    `UPDATE vault.entries e
         SET ${sets.join(", ")}
-      WHERE id = $${p++} AND user_id = $${p}
-      RETURNING *`,
+      WHERE e.id = $${p++} AND ${entryAccessPredicate("e", p, "editor")}
+      RETURNING e.*`,
     params
   );
 
