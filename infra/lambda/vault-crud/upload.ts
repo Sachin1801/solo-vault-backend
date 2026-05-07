@@ -46,6 +46,10 @@ export function buildVaultObjectKey(userId: string, entryId: string, filename: s
   return `users/${userId}/entries/${entryId}/objects/${sanitizeS3Filename(filename)}`;
 }
 
+function logVaultUpload(event: string, fields: Record<string, unknown>): void {
+  console.info(JSON.stringify({ event, service: "vault-crud", ...fields }));
+}
+
 function parseTags(tags: string): string[] {
   try {
     const parsed = JSON.parse(tags);
@@ -57,6 +61,17 @@ function parseTags(tags: string): string[] {
 
 function fileNameFromS3Key(s3Key: string): string {
   return s3Key.split("/").pop() || "file";
+}
+
+function numberFromDb(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
 }
 
 export async function uploadEntry(
@@ -82,19 +97,32 @@ export async function uploadEntry(
     throw ApiError.invalidInput(`${path}: ${issue?.message ?? "Invalid body"}`);
   }
 
-  const existing = await query<{ id: string }>(
-    `SELECT e.id
+  const existing = await query<{ id: string; user_id: string; owner_user_id: string | null }>(
+    `SELECT e.id, e.user_id, e.owner_user_id
        FROM vault.entries e
       WHERE e.id = $1 AND ${entryAccessPredicate("e", 2, "editor")}`,
     [entryId, auth.user_id],
   );
-  if (existing.length === 0) {
+  const entry = existing[0];
+  if (!entry) {
     throw ApiError.entryNotFound(entryId);
   }
 
   const { filename, content_type } = parsed.data;
-  const s3Key = buildVaultObjectKey(auth.user_id, entryId, filename);
+  const storageUserId = entry.owner_user_id ?? entry.user_id;
+  const s3Key = buildVaultObjectKey(storageUserId, entryId, filename);
   const expiresIn = 300;
+
+  logVaultUpload("vault.upload_url.requested", {
+    entry_id: entryId,
+    user_id: auth.user_id,
+    storage_user_id: storageUserId,
+    bucket: BUCKET,
+    s3_key: s3Key,
+    filename: sanitizeS3Filename(filename),
+    content_type,
+    expires_in: expiresIn,
+  });
 
   const uploadUrl = await getSignedUrl(
     s3,
@@ -166,6 +194,13 @@ export async function completeUploadEntry(
     throw ApiError.internal("VAULT_INDEX_STATE_MACHINE_ARN environment variable is not set");
   }
 
+  logVaultUpload("vault.upload_complete.received", {
+    entry_id: entryId,
+    user_id: auth.user_id,
+    bucket: BUCKET,
+    s3_key: entry.vault_blob_path,
+  });
+
   let head: HeadObjectCommandOutput;
   try {
     head = await s3.send(
@@ -175,13 +210,37 @@ export async function completeUploadEntry(
     const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
     const name = (err as { name?: string }).name;
     if (status === 404 || name === "NotFound" || name === "NoSuchKey") {
+      logVaultUpload("vault.upload_complete.s3_head_missing", {
+        entry_id: entryId,
+        user_id: auth.user_id,
+        bucket: BUCKET,
+        s3_key: entry.vault_blob_path,
+      });
       throw ApiError.invalidInput("Uploaded S3 object was not found");
     }
+    logVaultUpload("vault.upload_complete.s3_head_failed", {
+      entry_id: entryId,
+      user_id: auth.user_id,
+      bucket: BUCKET,
+      s3_key: entry.vault_blob_path,
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   }
   const contentType = head.ContentType || entry.mime || "application/octet-stream";
   const sizeBytes = head.ContentLength ?? entry.size_bytes ?? 0;
+  const numericSizeBytes = numberFromDb(sizeBytes);
   const now = Math.floor(Date.now() / 1000);
+
+  logVaultUpload("vault.upload_complete.s3_head_ok", {
+    entry_id: entryId,
+    user_id: auth.user_id,
+    bucket: BUCKET,
+    s3_key: entry.vault_blob_path,
+    content_type: contentType,
+    size_bytes: numericSizeBytes,
+    e_tag: head.ETag,
+  });
 
   const updatedRows = await query<VaultEntry>(
     `UPDATE vault.entries
@@ -194,12 +253,13 @@ export async function completeUploadEntry(
             index_error = NULL
       WHERE id = $4
       RETURNING *`,
-    [sizeBytes, contentType, now, entryId],
+    [numericSizeBytes, contentType, now, entryId],
   );
   const updated = updatedRows[0] ?? entry;
+  const executionSizeBytes = numberFromDb(updated.size_bytes, numericSizeBytes);
 
   try {
-    await sfn.send(
+    const execution = await sfn.send(
       new StartExecutionCommand({
         stateMachineArn: INDEX_STATE_MACHINE_ARN,
         input: JSON.stringify({
@@ -211,7 +271,7 @@ export async function completeUploadEntry(
           mime: updated.mime ?? contentType,
           kind: updated.kind,
           subkind: updated.subkind ?? "",
-          size_bytes: updated.size_bytes ?? sizeBytes,
+          size_bytes: executionSizeBytes,
           title: updated.title,
           tags: parseTags(updated.tags),
           classifier_confidence: updated.classifier_confidence,
@@ -221,7 +281,21 @@ export async function completeUploadEntry(
         }),
       }),
     );
+    logVaultUpload("vault.upload_complete.indexing_started", {
+      entry_id: updated.id,
+      user_id: updated.user_id,
+      state_machine_arn: INDEX_STATE_MACHINE_ARN,
+      execution_arn: execution.executionArn,
+      s3_key: updated.vault_blob_path,
+    });
   } catch (err) {
+    logVaultUpload("vault.upload_complete.indexing_start_failed", {
+      entry_id: updated.id,
+      user_id: updated.user_id,
+      state_machine_arn: INDEX_STATE_MACHINE_ARN,
+      s3_key: updated.vault_blob_path,
+      error: err instanceof Error ? err.message : String(err),
+    });
     await query(
       `UPDATE vault.entries
           SET cloud_sync_state = 'failed',
