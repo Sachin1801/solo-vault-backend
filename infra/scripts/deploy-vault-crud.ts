@@ -7,6 +7,7 @@
 //   npm run destroy:vault-crud         # dev (requires --confirm-destroy <stack-name>)
 
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { build as esbuild } from "esbuild";
 import AdmZip from "adm-zip";
@@ -84,8 +85,9 @@ function stackName(config: BaseConfig): string {
   return `${config.project_prefix}-vault-crud-lambda-${config.environment}`;
 }
 
-function artifactKey(): string {
-  return "vault-crud/function.zip";
+function artifactKey(zipBytes: Buffer): string {
+  const hash = createHash("sha256").update(zipBytes).digest("hex").slice(0, 16);
+  return `vault-crud/function-${hash}.zip`;
 }
 
 async function resolveExport(
@@ -167,6 +169,7 @@ async function deployStack(
   cfn: CloudFormationClient,
   config: BaseConfig,
   artifactsBucket: string,
+  vaultCrudArtifactKey: string,
 ): Promise<void> {
   const templatePath = resolve(
     process.cwd(),
@@ -176,13 +179,12 @@ async function deployStack(
   );
   const templateBody = readFileSync(templatePath, "utf-8");
   const name = stackName(config);
-  const key = artifactKey();
 
   const parameters: Parameter[] = [
     { ParameterKey: "ProjectPrefix", ParameterValue: config.project_prefix },
     { ParameterKey: "EnvironmentName", ParameterValue: config.environment },
     { ParameterKey: "ArtifactsBucket", ParameterValue: artifactsBucket },
-    { ParameterKey: "VaultCrudArtifactKey", ParameterValue: key },
+    { ParameterKey: "VaultCrudArtifactKey", ParameterValue: vaultCrudArtifactKey },
   ];
   const tags: Tag[] = Object.entries(config.tags ?? {}).map(([Key, Value]) => ({
     Key,
@@ -264,7 +266,7 @@ async function run(): Promise<void> {
   const { zipPath, cleanup } = await bundleVaultCrud();
   try {
     const zipBytes = readFileSync(zipPath);
-    const key = artifactKey();
+    const key = artifactKey(zipBytes);
     const s3 = new S3Client({ region: config.region });
     console.log(`Uploading ${key} (${zipBytes.length} bytes) to ${artifactsBucket}...`);
     await s3.send(
@@ -278,7 +280,7 @@ async function run(): Promise<void> {
     console.log("Upload complete.");
 
     // Deploy CloudFormation
-    await deployStack(cfn, config, artifactsBucket);
+    await deployStack(cfn, config, artifactsBucket, key);
   } finally {
     cleanup();
   }
