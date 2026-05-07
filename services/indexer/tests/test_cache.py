@@ -31,42 +31,42 @@ from app.cache.redis_cache import (  # noqa: E402
 
 def test_is_file_indexed_true_when_key_exists():
     _MOCK_REDIS.exists.return_value = 1
-    assert is_file_indexed("abc123") is True
-    _MOCK_REDIS.exists.assert_called_once_with("cache:file:abc123")
+    assert is_file_indexed("abc123", "user-1") is True
+    _MOCK_REDIS.exists.assert_called_once_with("cache:file:user-1:abc123")
 
 
 def test_is_file_indexed_false_when_key_absent():
     _MOCK_REDIS.exists.return_value = 0
-    assert is_file_indexed("nope") is False
+    assert is_file_indexed("nope", "user-1") is False
 
 
 def test_is_file_indexed_uses_correct_key_prefix():
     _MOCK_REDIS.exists.return_value = 0
-    is_file_indexed("deadbeef")
+    is_file_indexed("deadbeef", "user-1")
     key = _MOCK_REDIS.exists.call_args[0][0]
-    assert key.startswith("cache:file:")
+    assert key.startswith("cache:file:user-1:")
 
 
 # ── mark_file_indexed ─────────────────────────────────────────────────────────
 
 
 def test_mark_file_indexed_calls_set_with_ttl():
-    mark_file_indexed("hash1", "entry-1")
+    mark_file_indexed("hash1", "user-1", "entry-1")
     _MOCK_REDIS.set.assert_called_once()
     args, kwargs = _MOCK_REDIS.set.call_args
-    assert args[0] == "cache:file:hash1"
+    assert args[0] == "cache:file:user-1:hash1"
     assert args[1] == "entry-1"
     assert kwargs.get("ex") == 86400 * 7
 
 
 def test_mark_file_indexed_custom_ttl():
-    mark_file_indexed("hash2", "entry-2", ttl_seconds=3600)
+    mark_file_indexed("hash2", "user-1", "entry-2", ttl_seconds=3600)
     _, kwargs = _MOCK_REDIS.set.call_args
     assert kwargs.get("ex") == 3600
 
 
 def test_mark_file_indexed_stores_entry_id():
-    mark_file_indexed("h", "my-entry-id")
+    mark_file_indexed("h", "user-1", "my-entry-id")
     args, _ = _MOCK_REDIS.set.call_args
     assert args[1] == "my-entry-id"
 
@@ -94,11 +94,11 @@ def test_get_cached_embedding_uses_correct_key():
 
 
 def test_get_cached_embedding_returns_list_of_floats():
-    vector = [float(i) / 10 for i in range(1024)]
+    vector = [float(i) / 10 for i in range(384)]
     _MOCK_REDIS.get.return_value = json.dumps(vector)
     result = get_cached_embedding("h")
     assert isinstance(result, list)
-    assert len(result) == 1024
+    assert len(result) == 384
     assert all(isinstance(v, float) for v in result)
 
 
@@ -131,11 +131,11 @@ def test_cache_embedding_custom_ttl():
 def test_file_cache_roundtrip():
     """Verify key written by mark matches key read by is_file_indexed."""
     fhash = "abc" * 20  # 60-char hash
-    mark_file_indexed(fhash, "entry-99")
+    mark_file_indexed(fhash, "user-1", "entry-99")
     written_key = _MOCK_REDIS.set.call_args[0][0]
 
     _MOCK_REDIS.exists.return_value = 1
-    is_file_indexed(fhash)
+    is_file_indexed(fhash, "user-1")
     read_key = _MOCK_REDIS.exists.call_args[0][0]
 
     assert written_key == read_key
