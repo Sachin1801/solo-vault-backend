@@ -4,10 +4,11 @@
 
 FROM public.ecr.aws/lambda/python:3.12
 
-# System deps for parsers
+# System deps for parsers.
+# Amazon Linux 2023's Lambda base image does not ship a tesseract package in
+# the default repo; cloud image OCR currently returns a placeholder upstream.
 RUN dnf install -y \
     poppler-utils \
-    tesseract \
     && dnf clean all
 
 # Python deps
