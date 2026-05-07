@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     embedding_provider: str = "local"
     embedding_model: str = "BAAI/bge-m3"
-    embedding_dim: int = 1024
+    embedding_dim: int = 384
     embedding_base_url: str = ""
     openai_api_key: str = ""
 
