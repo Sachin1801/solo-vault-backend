@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket
@@ -70,44 +71,57 @@ def enqueue_index(request: IndexRequest) -> dict[str, str]:
 
     execute_write(
         """
-        INSERT INTO vault_entries (
-            user_id, project_id, entry_id, title, file_name, file_size,
-            mime_type, s3_key, kind, subkind, index_status, classifier_confidence,
-            pinned, memory_type, tags, metadata, updated_at
+        INSERT INTO vault.entries (
+            id, user_id, owner_user_id, kind, subkind, title, vault_blob_path,
+            scope_type, scope_project_id, memory_type, pinned, tags, mime,
+            size_bytes, index_status, cloud_sync_state, classifier_confidence,
+            created_at, updated_at, uploaded_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s, '{}'::jsonb, NOW())
-        ON CONFLICT (entry_id) DO UPDATE SET
+        VALUES (
+            %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, %s, %s,
+            %s, 'pending', 'indexing_remote', %s,
+            EXTRACT(EPOCH FROM NOW())::bigint,
+            EXTRACT(EPOCH FROM NOW())::bigint,
+            EXTRACT(EPOCH FROM NOW())::bigint
+        )
+        ON CONFLICT (id) DO UPDATE SET
             user_id = EXCLUDED.user_id,
-            project_id = EXCLUDED.project_id,
+            owner_user_id = EXCLUDED.owner_user_id,
             title = EXCLUDED.title,
-            file_name = EXCLUDED.file_name,
-            file_size = EXCLUDED.file_size,
-            mime_type = EXCLUDED.mime_type,
-            s3_key = EXCLUDED.s3_key,
+            vault_blob_path = EXCLUDED.vault_blob_path,
+            scope_type = EXCLUDED.scope_type,
+            scope_project_id = EXCLUDED.scope_project_id,
             kind = EXCLUDED.kind,
             subkind = EXCLUDED.subkind,
             index_status = 'pending',
+            cloud_sync_state = 'indexing_remote',
             classifier_confidence = EXCLUDED.classifier_confidence,
             pinned = EXCLUDED.pinned,
             memory_type = EXCLUDED.memory_type,
             tags = EXCLUDED.tags,
-            updated_at = NOW()
+            mime = EXCLUDED.mime,
+            size_bytes = EXCLUDED.size_bytes,
+            uploaded_at = EXCLUDED.uploaded_at,
+            index_error = NULL,
+            updated_at = EXTRACT(EPOCH FROM NOW())::bigint
         """,
         (
-            request.user_id,
-            request.project_id,
             request.entry_id,
-            request.title,
-            request.file_name,
-            request.size_bytes,
-            request.mime,
-            request.s3_key,
+            request.user_id,
+            request.user_id,
             kind.value,
             request.subkind,
+            request.title,
+            request.s3_key,
+            "project" if request.project_id else "global",
+            request.project_id,
+            request.memory_type or "user",
+            1 if request.pinned else 0,
+            json.dumps(request.tags),
+            request.mime,
+            request.size_bytes,
             request.classifier_confidence,
-            request.pinned,
-            request.memory_type,
-            request.tags,
         ),
     )
 
@@ -120,7 +134,10 @@ def get_job_status(job_id: str) -> dict[str, Any]:
     rows = execute_query(
         """
         SELECT entry_id, index_status, chunk_count, chunker_version
-        FROM vault_entries
+        FROM (
+            SELECT id AS entry_id, index_status, chunk_count, chunker_version
+            FROM vault.entries
+        ) e
         WHERE entry_id = %s
         LIMIT 1
         """,
@@ -149,7 +166,6 @@ def _status_to_progress(status: str) -> int:
         "completed": 100,
         "indexed": 100,
         "failed": 0,
-        "deleted": 0,
     }
     return status_map.get(status, 0)
 
