@@ -4,6 +4,7 @@ import { ok } from "../shared/response.js";
 import { ApiError } from "../shared/errors.js";
 import { query } from "../shared/db.js";
 import type { AuthContext } from "../shared/auth.js";
+import { entryAccessPredicate } from "../shared/vault-authz.js";
 import {
   ENTRY_KINDS,
   MEMORY_TYPES,
@@ -41,37 +42,37 @@ export async function listEntries(
   const q = parsed.data;
 
   // Build WHERE incrementally so missing filters don't appear in the SQL.
-  const conditions: string[] = ["user_id = $1"];
+  const conditions: string[] = [entryAccessPredicate("e", 1, "viewer")];
   const params: unknown[] = [auth.user_id];
   let p = 2;
 
   if (q.scope_type) {
-    conditions.push(`scope_type = $${p++}`);
+    conditions.push(`e.scope_type = $${p++}`);
     params.push(q.scope_type);
     if (q.scope_type === "project") {
-      conditions.push(`scope_project_id = $${p++}`);
+      conditions.push(`e.scope_project_id = $${p++}`);
       params.push(q.scope_project_id);
     } else {
-      conditions.push(`scope_project_id IS NULL`);
+      conditions.push(`e.scope_project_id IS NULL`);
     }
   }
   if (q.kind) {
-    conditions.push(`kind = $${p++}`);
+    conditions.push(`e.kind = $${p++}`);
     params.push(q.kind);
   }
   if (q.memory_type) {
-    conditions.push(`memory_type = $${p++}`);
+    conditions.push(`e.memory_type = $${p++}`);
     params.push(q.memory_type);
   }
   if (q.pinned !== undefined) {
-    conditions.push(`pinned = $${p++}`);
+    conditions.push(`e.pinned = $${p++}`);
     params.push(Number(q.pinned));
   }
   if (q.tag) {
     // tags column is TEXT (JSON-string mirror of local). Cast to jsonb on
     // read for containment query — index-less but acceptable while
     // entry counts are low. Add a generated jsonb column + GIN later if hot.
-    conditions.push(`tags::jsonb @> $${p++}::jsonb`);
+    conditions.push(`e.tags::jsonb @> $${p++}::jsonb`);
     params.push(JSON.stringify([q.tag]));
   }
 
@@ -80,10 +81,10 @@ export async function listEntries(
 
   // Single query with COUNT(*) OVER () gives total alongside the page.
   const rows = await query<VaultEntry & { total: string }>(
-    `SELECT *, COUNT(*) OVER () AS total
-       FROM vault.entries
+    `SELECT e.*, COUNT(*) OVER () AS total
+       FROM vault.entries e
       WHERE ${conditions.join(" AND ")}
-      ORDER BY updated_at DESC
+      ORDER BY e.updated_at DESC
       LIMIT $${p++} OFFSET $${p}`,
     params
   );
