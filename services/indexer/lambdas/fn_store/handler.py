@@ -147,7 +147,21 @@ def _store_embeddings(event: dict) -> dict:
     file_hash = event.get("file_hash", "")
     s3_key = event.get("s3_key", "")
     embeddings_key = event.get("embeddings_s3_key", f"pipeline/{entry_id}/embeddings.json")
+    print(json.dumps({
+        "event": "vault.pipeline.store.started",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "s3_key": s3_key,
+        "embeddings_s3_key": embeddings_key,
+        "file_hash": file_hash,
+    }))
     embeddings = _read_s3_json(embeddings_key)
+    print(json.dumps({
+        "event": "vault.pipeline.store.embeddings_loaded",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "embedding_count": len(embeddings),
+    }))
 
     conn = _get_conn()
     try:
@@ -219,10 +233,24 @@ def _store_embeddings(event: dict) -> dict:
         conn.commit()
     except Exception as exc:
         conn.rollback()
+        print(json.dumps({
+            "event": "vault.pipeline.store.failed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+            "error": str(exc),
+        }))
         _update_status(entry_id, "failed", user_id, str(exc))
         raise
 
     _delete_s3_prefix(f"pipeline/{entry_id}/")
+    print(json.dumps({
+        "event": "vault.pipeline.store.completed",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "chunk_count": len(embeddings),
+        "embedding_model": EMBEDDING_MODEL,
+        "chunker_version": CHUNKER_VERSION,
+    }))
     return {"status": "indexed", "entry_id": entry_id}
 
 
@@ -303,18 +331,40 @@ def handler(event: dict, context: Any) -> dict:
     action = event.get("action", "store")
     entry_id = event.get("entry_id", "unknown")
     user_id = event.get("user_id", "")
+    print(json.dumps({
+        "event": "vault.pipeline.store.handler",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "action": action,
+    }))
 
     if action == "store":
         return _store_embeddings(event)
     if action == "mark_indexed":
         _update_status(entry_id, "indexed", user_id)
+        print(json.dumps({
+            "event": "vault.pipeline.store.mark_indexed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+        }))
         return {"status": "indexed", "entry_id": entry_id}
     if action == "mark_deleted":
         _update_status(entry_id, "failed", user_id, "S3 object missing")
+        print(json.dumps({
+            "event": "vault.pipeline.store.mark_missing_s3_failed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+        }))
         return {"status": "failed", "entry_id": entry_id}
     if action == "mark_failed":
         error = json.dumps(event.get("error", {})) if event.get("error") else None
         _update_status(entry_id, "failed", user_id, error)
+        print(json.dumps({
+            "event": "vault.pipeline.store.mark_failed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+            "error": error,
+        }))
         return {"status": "failed", "entry_id": entry_id}
     if action == "clone":
         return _clone_from_source(event)
