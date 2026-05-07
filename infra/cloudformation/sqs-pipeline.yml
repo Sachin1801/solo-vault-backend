@@ -64,7 +64,7 @@ Resources:
             Resource: !GetAtt IndexQueue.Arn
             Condition:
               ArnLike:
-                aws:SourceArn: !Sub 'arn:aws:s3:::${ProjectPrefix}-vault-${Environment}'
+                aws:SourceArn: !Sub 'arn:aws:s3:::${ProjectPrefix}-${Environment}-vault-files-${AWS::AccountId}'
 
 Outputs:
   IndexQueueArn:
