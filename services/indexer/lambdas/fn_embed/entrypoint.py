@@ -17,7 +17,7 @@ Environment variables (set by Step Functions container overrides):
   S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION
   REDIS_URL      - ElastiCache URL for embedding cache
   EMBEDDING_MODEL - Model name (default: BAAI/bge-m3)
-  EMBEDDING_DIM   - Vector dimension (default: 1024)
+  EMBEDDING_DIM   - Vector dimension (default: 384)
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ INPUT_KEY = os.environ.get("INPUT_S3_KEY", "")
 OUTPUT_KEY = os.environ.get("OUTPUT_S3_KEY", "")
 ENTRY_ID = os.environ.get("ENTRY_ID", "unknown")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
-EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "1024"))
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "384"))
 
 # ---------------------------------------------------------------------------
 # S3 client
