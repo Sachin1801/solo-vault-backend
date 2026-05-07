@@ -99,7 +99,10 @@ def validate(event: dict) -> None:
     kind = event.get("kind", "unsorted")
     mime = event.get("mime", "")
     file_name = event.get("file_name", "")
-    size_bytes = event.get("size_bytes", 0)
+    try:
+        size_bytes = int(event.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        size_bytes = 0
     bucket = event["bucket"]
     s3_key = event["s3_key"]
 
@@ -126,10 +129,34 @@ def validate(event: dict) -> None:
 
 def handler(event: dict, context: Any) -> dict:
     """Step Functions invokes this. Returns the event on success, raises on failure."""
+    entry_id = event.get("entry_id", "")
+    print(json.dumps({
+        "event": "vault.pipeline.validate.started",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "bucket": event.get("bucket", ""),
+        "s3_key": event.get("s3_key", ""),
+        "mime": event.get("mime", ""),
+        "size_bytes": event.get("size_bytes", 0),
+    }))
     try:
         validate(event)
+        print(json.dumps({
+            "event": "vault.pipeline.validate.completed",
+            "entry_id": entry_id,
+            "user_id": event.get("user_id", ""),
+            "s3_key": event.get("s3_key", ""),
+        }))
         return event
     except PipelineError as exc:
+        print(json.dumps({
+            "event": "vault.pipeline.validate.failed",
+            "entry_id": entry_id,
+            "user_id": event.get("user_id", ""),
+            "s3_key": event.get("s3_key", ""),
+            "error_code": exc.code,
+            "error": str(exc),
+        }))
         # Step Functions catches errors by their name.  We raise a RuntimeError
         # whose string the ASL Catch block can match via ErrorEquals.
         raise RuntimeError(json.dumps({"code": exc.code, "message": str(exc)}))
