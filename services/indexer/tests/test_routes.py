@@ -4,6 +4,7 @@ import os
 import socket
 import time
 import uuid
+import json
 
 import httpx
 import pytest
@@ -73,7 +74,7 @@ def test_index_confidence_below_threshold_stored_as_unsorted(db_conn):
     assert resp.status_code == 200
 
     cur = db_conn.cursor()
-    cur.execute("SELECT kind FROM vault_entries WHERE entry_id = %s", (entry_id,))
+    cur.execute("SELECT kind FROM vault.entries WHERE id = %s", (entry_id,))
     row = cur.fetchone()
     assert row is not None
     assert row[0] == "unsorted"
@@ -95,10 +96,10 @@ def test_index_stores_tags_and_metadata(db_conn):
                json={**_BASE_PAYLOAD, "entry_id": entry_id,
                      "tags": ["alpha", "beta"]}, timeout=10)
     cur = db_conn.cursor()
-    cur.execute("SELECT tags FROM vault_entries WHERE entry_id = %s", (entry_id,))
+    cur.execute("SELECT tags FROM vault.entries WHERE id = %s", (entry_id,))
     row = cur.fetchone()
     assert row is not None
-    assert set(row[0]) == {"alpha", "beta"}
+    assert set(json.loads(row[0])) == {"alpha", "beta"}
 
 
 def test_index_stores_pinned_flag(db_conn):
@@ -106,8 +107,8 @@ def test_index_stores_pinned_flag(db_conn):
     httpx.post(f"{API_BASE_URL}/index",
                json={**_BASE_PAYLOAD, "entry_id": entry_id, "pinned": True}, timeout=10)
     cur = db_conn.cursor()
-    cur.execute("SELECT pinned FROM vault_entries WHERE entry_id = %s", (entry_id,))
-    assert cur.fetchone()[0] is True
+    cur.execute("SELECT pinned FROM vault.entries WHERE id = %s", (entry_id,))
+    assert cur.fetchone()[0] == 1
 
 
 # ── GET /jobs/{job_id} ────────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ def test_jobs_status_is_valid_value():
                json={**_BASE_PAYLOAD, "entry_id": entry_id}, timeout=10)
 
     resp = httpx.get(f"{API_BASE_URL}/jobs/{entry_id}", timeout=5)
-    valid = {"pending", "running", "indexed", "failed", "deleted"}
+    valid = {"pending", "extracting", "indexed", "failed"}
     assert resp.json()["status"] in valid
 
 
