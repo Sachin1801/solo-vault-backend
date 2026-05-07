@@ -15,6 +15,10 @@ import {
   waitUntilStackDeleteComplete,
   waitUntilStackUpdateComplete,
 } from "@aws-sdk/client-cloudformation";
+import {
+  APIGatewayClient,
+  CreateDeploymentCommand,
+} from "@aws-sdk/client-api-gateway";
 
 type Environment = "dev" | "staging" | "prod";
 type Action = "deploy" | "destroy";
@@ -114,6 +118,43 @@ async function printOutputs(client: CloudFormationClient, name: string): Promise
   }
 }
 
+async function stackOutputs(
+  client: CloudFormationClient,
+  name: string
+): Promise<Record<string, string>> {
+  const result = await client.send(new DescribeStacksCommand({ StackName: name }));
+  const outputs = result.Stacks?.[0]?.Outputs ?? [];
+  return Object.fromEntries(
+    outputs
+      .filter((output) => output.OutputKey && output.OutputValue)
+      .map((output) => [output.OutputKey!, output.OutputValue!])
+  );
+}
+
+async function createLiveDeployment(
+  config: BaseConfig,
+  outputs: Record<string, string>
+): Promise<void> {
+  const apiId = outputs.ApiId;
+  if (!apiId) {
+    throw new Error(`API Gateway stack ${stackName(config)} did not output ApiId`);
+  }
+
+  const stageName = "prod";
+  const apiGateway = new APIGatewayClient({ region: config.region });
+  const deployment = await apiGateway.send(
+    new CreateDeploymentCommand({
+      restApiId: apiId,
+      stageName,
+      description: `${config.environment} API deployment ${new Date().toISOString()}`,
+    })
+  );
+
+  console.log(
+    `Created live API Gateway deployment ${deployment.id} for ${apiId}/${stageName}`
+  );
+}
+
 async function deployStack(client: CloudFormationClient, config: BaseConfig): Promise<void> {
   const templatePath = resolve(
     process.cwd(),
@@ -139,9 +180,9 @@ async function deployStack(client: CloudFormationClient, config: BaseConfig): Pr
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("No updates are to be performed")) {
         console.log(`No changes detected for stack: ${name}`);
-        return;
+      } else {
+        throw err;
       }
-      throw err;
     }
   } else {
     console.log(`Creating stack ${name} in ${config.region}...`);
@@ -153,6 +194,7 @@ async function deployStack(client: CloudFormationClient, config: BaseConfig): Pr
   }
 
   await printOutputs(client, name);
+  await createLiveDeployment(config, await stackOutputs(client, name));
 }
 
 async function destroyStack(client: CloudFormationClient, config: BaseConfig): Promise<void> {
