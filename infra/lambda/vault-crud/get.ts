@@ -4,6 +4,7 @@ import { ApiError } from "../shared/errors.js";
 import { query } from "../shared/db.js";
 import type { AuthContext } from "../shared/auth.js";
 import type { VaultEntry } from "../shared/types.js";
+import { entryAccessPredicate } from "../shared/vault-authz.js";
 
 export async function getEntry(
   event: APIGatewayProxyEvent,
@@ -17,7 +18,7 @@ export async function getEntry(
   // IDOR defense: 404 (not 403) when an entry exists but belongs to another
   // user — leaks no existence information.
   const rows = await query<VaultEntry>(
-    `SELECT * FROM vault.entries WHERE id = $1 AND user_id = $2`,
+    `SELECT e.* FROM vault.entries e WHERE e.id = $1 AND ${entryAccessPredicate("e", 2, "viewer")}`,
     [id, auth.user_id]
   );
 
