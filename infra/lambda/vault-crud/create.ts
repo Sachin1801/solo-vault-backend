@@ -86,7 +86,7 @@ export async function createEntry(
        pinned, tags, mime, size_bytes,
        index_status, cloud_sync_state, classifier_confidence,
        hit_count, last_retrieved_at,
-       created_at, updated_at
+       created_at, updated_at, owner_user_id, project_id
      ) VALUES (
        $1, $2, $3, $4, $5, $6,
        $7, $8,
@@ -94,7 +94,7 @@ export async function createEntry(
        $12, $13, $14, $15,
        $16, $17, $18,
        $19, $20,
-       $21, $22
+       $21, $22, $23, $24
      )
      RETURNING *`,
     [
@@ -119,7 +119,9 @@ export async function createEntry(
       input.hit_count,
       input.last_retrieved_at ?? null,
       input.created_at,
-      input.updated_at
+      input.updated_at,
+      auth.user_id,
+      input.scope_project_id ?? null
     ]
   );
 
