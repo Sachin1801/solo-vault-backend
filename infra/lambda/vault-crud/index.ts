@@ -6,7 +6,9 @@ import { createEntry } from "./create.js";
 import { getEntry } from "./get.js";
 import { updateEntry } from "./update.js";
 import { deleteEntry } from "./delete.js";
-import { uploadEntry } from "./upload.js";
+import { completeUploadEntry, uploadEntry } from "./upload.js";
+import { downloadEntry } from "./download.js";
+import { searchEntries } from "./search.js";
 
 export const handler = async (
   event: APIGatewayProxyEvent
@@ -28,6 +30,12 @@ export const handler = async (
         return await deleteEntry(event, auth);
       case "POST /vault/entries/{id}/upload":
         return await uploadEntry(event, auth);
+      case "POST /vault/entries/{id}/upload/complete":
+        return await completeUploadEntry(event, auth);
+      case "GET /vault/entries/{id}/download":
+        return await downloadEntry(event, auth);
+      case "POST /vault/search":
+        return await searchEntries(event, auth);
       default:
         return handleError(new Error(`Unsupported route: ${route}`));
     }
