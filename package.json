@@ -15,6 +15,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@aws-sdk/client-api-gateway": "^3.1044.0",
     "@aws-sdk/client-cloudformation": "^3.908.0",
     "@aws-sdk/client-iam": "^3.908.0",
     "@aws-sdk/client-lambda": "^3.908.0",
