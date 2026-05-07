@@ -9,6 +9,12 @@ import { deleteEntry } from "./delete.js";
 import { completeUploadEntry, uploadEntry } from "./upload.js";
 import { downloadEntry } from "./download.js";
 import { searchEntries } from "./search.js";
+import {
+  deleteEntryShare,
+  listEntryShares,
+  replaceEntryShares,
+  upsertEntryShare,
+} from "./share.js";
 
 export const handler = async (
   event: APIGatewayProxyEvent
@@ -34,6 +40,14 @@ export const handler = async (
         return await completeUploadEntry(event, auth);
       case "GET /vault/entries/{id}/download":
         return await downloadEntry(event, auth);
+      case "GET /vault/entries/{id}/shares":
+        return await listEntryShares(event, auth);
+      case "POST /vault/entries/{id}/shares":
+        return await upsertEntryShare(event, auth);
+      case "PUT /vault/entries/{id}/shares":
+        return await replaceEntryShares(event, auth);
+      case "DELETE /vault/entries/{id}/shares":
+        return await deleteEntryShare(event, auth);
       case "POST /vault/search":
         return await searchEntries(event, auth);
       default:
