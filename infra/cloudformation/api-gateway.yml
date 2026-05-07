@@ -106,6 +106,13 @@ Resources:
       ParentId: !Ref VaultEntryByIdResource
       PathPart: upload
 
+  VaultEntryUploadCompleteResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !Ref VaultEntryUploadResource
+      PathPart: complete
+
   VaultEntryDownloadResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -424,6 +431,50 @@ Resources:
             method.response.header.Access-Control-Allow-Headers: true
             method.response.header.Access-Control-Allow-Methods: true
 
+  VaultEntryUploadCompletePostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryUploadCompleteResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
+      MethodResponses:
+        - StatusCode: "200"
+
+  VaultEntryUploadCompleteOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref VaultEntryUploadCompleteResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
   VaultEntryDownloadGetMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -435,19 +486,14 @@ Resources:
       RequestParameters:
         method.request.path.id: true
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultEntryDownloadOptionsMethod:
     Type: AWS::ApiGateway::Method
@@ -482,19 +528,14 @@ Resources:
       AuthorizationType: COGNITO_USER_POOLS
       AuthorizerId: !Ref CognitoAuthorizer
       Integration:
-        Type: MOCK
-        RequestTemplates:
-          application/json: '{"statusCode": 501}'
-        IntegrationResponses:
-          - StatusCode: "501"
-            ResponseParameters:
-              method.response.header.Access-Control-Allow-Origin: "'*'"
-            ResponseTemplates:
-              application/json: '{"error":{"code":"NOT_IMPLEMENTED","message":"Endpoint not yet implemented (INFRA-3 placeholder)"}}'
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations"
+          - FunctionArn:
+              Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-crud-arn"
       MethodResponses:
-        - StatusCode: "501"
-          ResponseParameters:
-            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "200"
 
   VaultSearchOptionsMethod:
     Type: AWS::ApiGateway::Method
@@ -704,6 +745,8 @@ Resources:
       - VaultEntryByIdOptionsMethod
       - VaultEntryUploadPostMethod
       - VaultEntryUploadOptionsMethod
+      - VaultEntryUploadCompletePostMethod
+      - VaultEntryUploadCompleteOptionsMethod
       - VaultEntryDownloadGetMethod
       - VaultEntryDownloadOptionsMethod
       - VaultSearchPostMethod
@@ -717,7 +760,7 @@ Resources:
       - SessionByIdOptionsMethod
     Properties:
       RestApiId: !Ref RestApi
-      Description: Initial deployment of all 14 endpoints with MOCK integrations
+      Description: Deployment with Vault upload-complete, private download, and search integrations
 
   ApiStage:
     Type: AWS::ApiGateway::Stage
