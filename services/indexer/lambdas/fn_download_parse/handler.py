@@ -101,6 +101,7 @@ def _parse(kind: str, local_path: str) -> str:
             job_id="",
             entry_id="",
             user_id="",
+            project_id=None,
             s3_key="",
             bucket="",
             file_name=Path(local_path).name,
