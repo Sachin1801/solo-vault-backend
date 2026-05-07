@@ -30,8 +30,8 @@ Parameters:
     Type: String
     Description: ARN of the embed ECS task definition
   PrivateSubnets:
-    Type: CommaDelimitedList
-    Description: Private subnet IDs for ECS tasks
+    Type: String
+    Description: JSON array of private subnet IDs for ECS tasks, for example ["subnet-abc"]
   LambdaSecurityGroup:
     Type: String
     Description: Security group ID for Lambda/ECS
@@ -118,13 +118,8 @@ Resources:
               "Type": "Task",
               "Resource": "${FnValidateArn}",
               "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "IntervalSeconds": 2, "BackoffRate": 2}],
-              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "CheckS3NotFound"}],
+              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MarkFailed"}],
               "Next": "DownloadParse"
-            },
-            "CheckS3NotFound": {
-              "Type": "Choice",
-              "Choices": [{"Variable": "$.error.Cause", "StringMatches": "*S3_NOT_FOUND*", "Next": "MarkDeleted"}],
-              "Default": "MarkFailed"
             },
             "DownloadParse": {
               "Type": "Task",
@@ -187,6 +182,8 @@ Resources:
                 "entry_id.$": "$.entry_id",
                 "user_id.$": "$.user_id",
                 "file_hash.$": "$.file_hash",
+                "bucket.$": "$.bucket",
+                "s3_key.$": "$.s3_key",
                 "embeddings_s3_key.$": "States.Format('pipeline/{}/embeddings.json', $.entry_id)"
               },
               "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 3, "IntervalSeconds": 2, "BackoffRate": 2}],
@@ -199,16 +196,10 @@ Resources:
               "Parameters": {"action": "clone", "entry_id.$": "$.entry_id", "user_id.$": "$.user_id", "file_hash.$": "$.file_hash"},
               "End": true
             },
-            "MarkDeleted": {
-              "Type": "Task",
-              "Resource": "${FnStoreArn}",
-              "Parameters": {"action": "mark_deleted", "entry_id.$": "$.entry_id"},
-              "End": true
-            },
             "MarkFailed": {
               "Type": "Task",
               "Resource": "${FnStoreArn}",
-              "Parameters": {"action": "mark_failed", "entry_id.$": "$.entry_id"},
+              "Parameters": {"action": "mark_failed", "entry_id.$": "$.entry_id", "user_id.$": "$.user_id"},
               "End": true
             }
           }
