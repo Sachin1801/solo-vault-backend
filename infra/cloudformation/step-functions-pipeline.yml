@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Solo Vault — Step Functions state machine for the indexing pipeline.
-  Orchestrates: validate -> download+parse -> chunk -> embed (ECS) -> store.
+  Orchestrates: validate -> download+parse -> chunk -> enqueue warm embed worker.
 
 Parameters:
   ProjectPrefix:
@@ -23,15 +23,24 @@ Parameters:
   FnStoreArn:
     Type: String
     Description: ARN of the store Lambda function
+  EmbedQueueArn:
+    Type: String
+    Description: ARN of the warm embed SQS queue
+  EmbedQueueUrl:
+    Type: String
+    Description: URL of the warm embed SQS queue
   EcsClusterArn:
     Type: String
-    Description: ARN of the ECS cluster for embed tasks
+    Description: Legacy parameter retained for deploy compatibility
   EmbedTaskDefArn:
     Type: String
-    Description: ARN of the embed ECS task definition
-  PrivateSubnets:
+    Description: Legacy parameter retained for deploy compatibility
+  PrivateSubnetA:
     Type: String
-    Description: JSON array of private subnet IDs for ECS tasks, for example ["subnet-abc"]
+    Description: First private subnet ID for ECS tasks
+  PrivateSubnetB:
+    Type: String
+    Description: Second private subnet ID for ECS tasks
   LambdaSecurityGroup:
     Type: String
     Description: Security group ID for Lambda/ECS
@@ -64,26 +73,14 @@ Resources:
                   - !Ref FnDownloadParseArn
                   - !Ref FnChunkArn
                   - !Ref FnStoreArn
-        - PolicyName: RunEcsTasks
+        - PolicyName: EnqueueEmbedJobs
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - ecs:RunTask
-                  - ecs:StopTask
-                  - ecs:DescribeTasks
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - iam:PassRole
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - events:PutTargets
-                  - events:PutRule
-                  - events:DescribeRule
-                Resource: '*'
+                  - sqs:SendMessage
+                Resource: !Ref EmbedQueueArn
         - PolicyName: CloudWatchLogs
           PolicyDocument:
             Version: '2012-10-17'
@@ -144,48 +141,12 @@ Resources:
             },
             "Embed": {
               "Type": "Task",
-              "Resource": "arn:aws:states:::ecs:runTask.sync",
+              "Resource": "arn:aws:states:::sqs:sendMessage",
               "Parameters": {
-                "LaunchType": "FARGATE",
-                "Cluster": "${EcsClusterArn}",
-                "TaskDefinition": "${EmbedTaskDefArn}",
-                "NetworkConfiguration": {
-                  "AwsvpcConfiguration": {
-                    "Subnets": ${PrivateSubnets},
-                    "SecurityGroups": ["${LambdaSecurityGroup}"],
-                    "AssignPublicIp": "DISABLED"
-                  }
-                },
-                "Overrides": {
-                  "ContainerOverrides": [{
-                    "Name": "embed",
-                    "Environment": [
-                      {"Name": "INPUT_S3_KEY", "Value.$": "$.chunks_s3_key"},
-                      {"Name": "OUTPUT_S3_KEY", "Value.$": "States.Format('pipeline/{}/embeddings.json', $.entry_id)"},
-                      {"Name": "ENTRY_ID", "Value.$": "$.entry_id"},
-                      {"Name": "S3_BUCKET", "Value.$": "$.bucket"}
-                    ]
-                  }]
-                }
+                "QueueUrl": "${EmbedQueueUrl}",
+                "MessageBody.$": "States.JsonToString($)"
               },
-              "ResultPath": "$.ecsResult",
-              "TimeoutSeconds": 600,
-              "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 1, "IntervalSeconds": 10, "BackoffRate": 2}],
-              "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MarkFailed"}],
-              "Next": "Store"
-            },
-            "Store": {
-              "Type": "Task",
-              "Resource": "${FnStoreArn}",
-              "Parameters": {
-                "action": "store",
-                "entry_id.$": "$.entry_id",
-                "user_id.$": "$.user_id",
-                "file_hash.$": "$.file_hash",
-                "bucket.$": "$.bucket",
-                "s3_key.$": "$.s3_key",
-                "embeddings_s3_key.$": "States.Format('pipeline/{}/embeddings.json', $.entry_id)"
-              },
+              "ResultPath": "$.embedQueueResult",
               "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 3, "IntervalSeconds": 2, "BackoffRate": 2}],
               "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "MarkFailed"}],
               "End": true
@@ -199,7 +160,7 @@ Resources:
             "MarkFailed": {
               "Type": "Task",
               "Resource": "${FnStoreArn}",
-              "Parameters": {"action": "mark_failed", "entry_id.$": "$.entry_id", "user_id.$": "$.user_id"},
+              "Parameters": {"action": "mark_failed", "entry_id.$": "$.entry_id", "user_id.$": "$.user_id", "error.$": "$.error"},
               "End": true
             }
           }
