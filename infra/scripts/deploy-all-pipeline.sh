@@ -32,6 +32,7 @@ ROOT_DIR=$(cd "$(dirname "$0")/../.." && pwd)
 INDEXER_DIR="${ROOT_DIR}/services/indexer"
 CFN_DIR="${ROOT_DIR}/infra/cloudformation"
 IMAGE_TAG=$(date -u +%Y%m%d%H%M%S)
+DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 
 cleanup() {
     rm -rf "${INDEXER_DIR}/lambdas/fn_download_parse/app"
@@ -43,6 +44,7 @@ echo "  Solo Vault Pipeline Deploy"
 echo "  Environment: ${ENV}"
 echo "  Account:     ${ACCOUNT_ID}"
 echo "  Region:      ${REGION}"
+echo "  Docker arch: ${DOCKER_PLATFORM}"
 echo "============================================"
 echo ""
 
@@ -109,8 +111,10 @@ get_export() {
     local EXPORT_NAME="$1"
     aws cloudformation list-exports \
         --region "${REGION}" \
-        --query "Exports[?Name=='${EXPORT_NAME}'].Value | [0]" \
-        --output text
+        --query "Exports[?Name=='${EXPORT_NAME}'].Value" \
+        --output text \
+        | tr '\t' '\n' \
+        | awk 'NF && $0 != "None" { print; exit }'
 }
 
 require_value() {
@@ -134,6 +138,17 @@ ensure_ecr_repo() {
         --no-cli-pager >/dev/null
 }
 
+install_lambda_deps() {
+    local TARGET_DIR="$1"
+    shift
+    docker run --rm \
+        --platform "${DOCKER_PLATFORM}" \
+        --entrypoint /bin/sh \
+        -v "${TARGET_DIR}:/asset-output" \
+        public.ecr.aws/lambda/python:3.12 \
+        -c "python -m pip install --quiet --target /asset-output $*"
+}
+
 # ============================================================================
 # Step 1: Deploy SQS
 # ============================================================================
@@ -144,7 +159,14 @@ deploy_stack "${PROJECT}-sqs-pipeline-${ENV}" "sqs-pipeline.yml" \
 
 SQS_ARN=$(get_output "${PROJECT}-sqs-pipeline-${ENV}" "IndexQueueArn")
 SQS_URL=$(get_output "${PROJECT}-sqs-pipeline-${ENV}" "IndexQueueUrl")
+EMBED_QUEUE_ARN=$(get_output "${PROJECT}-sqs-pipeline-${ENV}" "EmbedQueueArn")
+EMBED_QUEUE_URL=$(get_output "${PROJECT}-sqs-pipeline-${ENV}" "EmbedQueueUrl")
+EMBED_QUEUE_NAME=$(get_output "${PROJECT}-sqs-pipeline-${ENV}" "EmbedQueueName")
+EMBED_DESIRED_COUNT="${EMBED_DESIRED_COUNT:-1}"
+EMBED_MAX_CAPACITY="${EMBED_MAX_CAPACITY:-2}"
 echo "   SQS ARN: ${SQS_ARN}"
+echo "   Embed queue: ${EMBED_QUEUE_URL}"
+echo "   Embed workers: desired=${EMBED_DESIRED_COUNT}, max=${EMBED_MAX_CAPACITY}"
 
 # ============================================================================
 # Step 2: Get network outputs from shared-network stack
@@ -181,7 +203,7 @@ echo "   Building fn-download-parse image..."
 cd "${INDEXER_DIR}/lambdas/fn_download_parse"
 rm -rf ./app/
 cp -r "${INDEXER_DIR}/app" ./app/
-docker build -t "${ECR_DP_REPO}:${IMAGE_TAG}" .
+docker build --platform "${DOCKER_PLATFORM}" --provenance=false -t "${ECR_DP_REPO}:${IMAGE_TAG}" .
 docker tag "${ECR_DP_REPO}:${IMAGE_TAG}" "${ECR_DP_URI}:${IMAGE_TAG}"
 docker tag "${ECR_DP_REPO}:${IMAGE_TAG}" "${ECR_DP_URI}:latest"
 docker push "${ECR_DP_URI}:${IMAGE_TAG}"
@@ -190,7 +212,7 @@ rm -rf ./app/
 
 echo "   Building fn-embed image..."
 cd "${INDEXER_DIR}/lambdas/fn_embed"
-docker build -t "${ECR_EMBED_REPO}:${IMAGE_TAG}" .
+docker build --platform "${DOCKER_PLATFORM}" --provenance=false -t "${ECR_EMBED_REPO}:${IMAGE_TAG}" .
 docker tag "${ECR_EMBED_REPO}:${IMAGE_TAG}" "${ECR_EMBED_URI}:${IMAGE_TAG}"
 docker tag "${ECR_EMBED_REPO}:${IMAGE_TAG}" "${ECR_EMBED_URI}:latest"
 docker push "${ECR_EMBED_URI}:${IMAGE_TAG}"
@@ -215,6 +237,11 @@ deploy_stack "${PROJECT}-pipeline-lambdas-${ENV}" "pipeline-lambdas.yml" \
     "LambdaSecurityGroup=${LAMBDA_SG}" \
     "IndexQueueArn=${SQS_ARN}" \
     "IndexQueueUrl=${SQS_URL}" \
+    "EmbedQueueArn=${EMBED_QUEUE_ARN}" \
+    "EmbedQueueUrl=${EMBED_QUEUE_URL}" \
+    "EmbedQueueName=${EMBED_QUEUE_NAME}" \
+    "EmbedDesiredCount=${EMBED_DESIRED_COUNT}" \
+    "EmbedMaxCapacity=${EMBED_MAX_CAPACITY}" \
     "StateMachineArn=${SFN_ARN_PLACEHOLDER}" \
     "DbSecretArn=${DB_SECRET_ARN}" \
     "S3BucketName=${VAULT_FILES_BUCKET}" \
@@ -257,7 +284,7 @@ cd "${INDEXER_DIR}/lambdas/fn_chunk"
 rm -rf /tmp/fn-chunk-pkg
 mkdir -p /tmp/fn-chunk-pkg
 cp handler.py /tmp/fn-chunk-pkg/
-pip install --quiet --target /tmp/fn-chunk-pkg tiktoken 2>/dev/null
+install_lambda_deps /tmp/fn-chunk-pkg tiktoken
 cd /tmp/fn-chunk-pkg && zip -qr /tmp/fn-chunk.zip .
 aws lambda update-function-code \
     --function-name "${PROJECT}-fn-chunk-${ENV}" \
@@ -271,7 +298,7 @@ cd "${INDEXER_DIR}/lambdas/fn_store"
 rm -rf /tmp/fn-store-pkg
 mkdir -p /tmp/fn-store-pkg
 cp handler.py /tmp/fn-store-pkg/
-pip install --quiet --target /tmp/fn-store-pkg psycopg2-binary pgvector 2>/dev/null
+install_lambda_deps /tmp/fn-store-pkg psycopg2-binary pgvector
 cd /tmp/fn-store-pkg && zip -qr /tmp/fn-store.zip .
 aws lambda update-function-code \
     --function-name "${PROJECT}-fn-store-${ENV}" \
@@ -293,9 +320,12 @@ deploy_stack "${PROJECT}-sfn-pipeline-${ENV}" "step-functions-pipeline.yml" \
     "FnDownloadParseArn=${FN_DOWNLOAD_PARSE_ARN}" \
     "FnChunkArn=${FN_CHUNK_ARN}" \
     "FnStoreArn=${FN_STORE_ARN}" \
+    "EmbedQueueArn=${EMBED_QUEUE_ARN}" \
+    "EmbedQueueUrl=${EMBED_QUEUE_URL}" \
     "EcsClusterArn=${ECS_CLUSTER_ARN}" \
     "EmbedTaskDefArn=${EMBED_TASKDEF_ARN}" \
-    "PrivateSubnets=[\"${SUBNET_A}\",\"${SUBNET_B}\"]" \
+    "PrivateSubnetA=${SUBNET_A}" \
+    "PrivateSubnetB=${SUBNET_B}" \
     "LambdaSecurityGroup=${LAMBDA_SG}"
 
 SFN_ARN=$(get_output "${PROJECT}-sfn-pipeline-${ENV}" "StateMachineArn")
@@ -311,6 +341,11 @@ deploy_stack "${PROJECT}-pipeline-lambdas-${ENV}" "pipeline-lambdas.yml" \
     "LambdaSecurityGroup=${LAMBDA_SG}" \
     "IndexQueueArn=${SQS_ARN}" \
     "IndexQueueUrl=${SQS_URL}" \
+    "EmbedQueueArn=${EMBED_QUEUE_ARN}" \
+    "EmbedQueueUrl=${EMBED_QUEUE_URL}" \
+    "EmbedQueueName=${EMBED_QUEUE_NAME}" \
+    "EmbedDesiredCount=${EMBED_DESIRED_COUNT}" \
+    "EmbedMaxCapacity=${EMBED_MAX_CAPACITY}" \
     "StateMachineArn=${SFN_ARN}" \
     "DbSecretArn=${DB_SECRET_ARN}" \
     "S3BucketName=${VAULT_FILES_BUCKET}" \
@@ -335,12 +370,14 @@ echo "  DEPLOYMENT COMPLETE"
 echo "============================================"
 echo ""
 echo "  SQS Queue:    ${SQS_URL}"
+echo "  Embed Queue:  ${EMBED_QUEUE_URL}"
 echo "  State Machine: ${SFN_ARN}"
 echo "  fn-validate:   ${FN_VALIDATE_ARN}"
 echo "  fn-chunk:      ${FN_CHUNK_ARN}"
 echo "  fn-store:      ${FN_STORE_ARN}"
 echo "  fn-download-parse: ${FN_DOWNLOAD_PARSE_ARN}"
 echo "  ECS Cluster:   ${ECS_CLUSTER_ARN}"
+echo "  Embed Service: ${PROJECT}-embed-worker-${ENV} (desired=${EMBED_DESIRED_COUNT})"
 echo ""
 echo "  NEXT: Upload dataset to test:"
 echo "    python services/indexer/scripts/upload_dataset.py \\"
