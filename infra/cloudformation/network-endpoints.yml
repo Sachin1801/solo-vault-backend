@@ -91,6 +91,34 @@ Resources:
         - !Ref EndpointSecurityGroup
       PrivateDnsEnabled: true
 
+  SqsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sqs"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.lambda"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
   EcrApiEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -140,6 +168,10 @@ Outputs:
     Value: !Ref CloudWatchLogsEndpoint
   StepFunctionsEndpointId:
     Value: !Ref StepFunctionsEndpoint
+  SqsEndpointId:
+    Value: !Ref SqsEndpoint
+  LambdaEndpointId:
+    Value: !Ref LambdaEndpoint
   EcrApiEndpointId:
     Value: !Ref EcrApiEndpoint
   EcrDkrEndpointId:
