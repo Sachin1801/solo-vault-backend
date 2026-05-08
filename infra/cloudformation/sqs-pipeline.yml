@@ -46,6 +46,35 @@ Resources:
           Value: !Ref Environment
 
   # -----------------------------------------------------------------------
+  # Embed queue — receives chunked jobs, consumed by warm ECS embed workers.
+  # -----------------------------------------------------------------------
+  EmbedDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectPrefix}-embed-dlq-${Environment}'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+  EmbedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectPrefix}-embed-queue-${Environment}'
+      VisibilityTimeout: 1800  # allow model inference + store Lambda retry
+      MessageRetentionPeriod: 345600  # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EmbedDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+  # -----------------------------------------------------------------------
   # Queue policy — allow S3 bucket to send messages
   # -----------------------------------------------------------------------
   IndexQueuePolicy:
@@ -84,3 +113,27 @@ Outputs:
     Value: !GetAtt IndexDLQ.Arn
     Export:
       Name: !Sub '${ProjectPrefix}-index-dlq-arn-${Environment}'
+
+  EmbedQueueArn:
+    Description: ARN of the warm embedding queue
+    Value: !GetAtt EmbedQueue.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-embed-queue-arn-${Environment}'
+
+  EmbedQueueUrl:
+    Description: URL of the warm embedding queue
+    Value: !Ref EmbedQueue
+    Export:
+      Name: !Sub '${ProjectPrefix}-embed-queue-url-${Environment}'
+
+  EmbedQueueName:
+    Description: Name of the warm embedding queue
+    Value: !GetAtt EmbedQueue.QueueName
+    Export:
+      Name: !Sub '${ProjectPrefix}-embed-queue-name-${Environment}'
+
+  EmbedDLQArn:
+    Description: ARN of the warm embedding dead-letter queue
+    Value: !GetAtt EmbedDLQ.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-embed-dlq-arn-${Environment}'
