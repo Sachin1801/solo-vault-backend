@@ -2,20 +2,17 @@
 Lambda handler: fn-store
 
 Multi-action handler invoked by Step Functions:
-  - "store":        Read embeddings from S3, upsert into pgvector, cleanup
-  - "mark_indexed": Update vault_entries.index_status = 'indexed'
-  - "mark_deleted": Update vault_entries.index_status = 'deleted'
-  - "mark_failed":  Update vault_entries.index_status = 'failed'
-  - "clone":        Copy chunks from a source entry with the same file_hash
+  - "store":       read embeddings from S3 and store vault.chunks/FTS
+  - "mark_failed": mark vault.entries failed without deleting the row
+  - "clone":       copy chunks from a same-user indexed entry with the same hash
 
 Input:  Step Functions event with action field
 Output: { status, entry_id }
-
-VPC: Yes (needs RDS access)
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any
@@ -24,19 +21,14 @@ import boto3
 import psycopg2
 from pgvector.psycopg2 import register_vector
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 PIPELINE_BUCKET = os.environ.get("S3_BUCKET", "vault-local")
 CHUNKER_VERSION = os.environ.get("CHUNKER_VERSION", "1")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
 
-# ---------------------------------------------------------------------------
-# S3 client (lazy singleton)
-# ---------------------------------------------------------------------------
-
 _s3 = None
+_secrets = None
+_conn = None
+_db_config = None
 
 
 def _get_s3():
@@ -53,58 +45,95 @@ def _get_s3():
     return _s3
 
 
+def _get_secrets():
+    global _secrets
+    if _secrets is None:
+        _secrets = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    return _secrets
+
+
+def _load_db_config() -> dict[str, Any]:
+    global _db_config
+    if _db_config is not None:
+        return _db_config
+
+    secret_arn = os.environ.get("DB_SECRET_ARN")
+    if secret_arn:
+        resp = _get_secrets().get_secret_value(SecretId=secret_arn)
+        secret = json.loads(resp["SecretString"])
+        _db_config = {
+            "host": secret["host"],
+            "port": int(secret.get("port", 5432)),
+            "dbname": secret.get("dbname") or secret.get("database") or "vault",
+            "user": secret.get("username") or secret.get("user"),
+            "password": secret["password"],
+        }
+    else:
+        _db_config = {
+            "host": os.environ.get("DB_HOST", "localhost"),
+            "port": int(os.environ.get("DB_PORT", "5432")),
+            "dbname": os.environ.get("DB_NAME", "vault"),
+            "user": os.environ.get("DB_USER", "vault"),
+            "password": os.environ.get("DB_PASSWORD", "vault"),
+        }
+    return _db_config
+
+
+def _get_conn():
+    global _conn
+    if _conn is None or _conn.closed:
+        _conn = psycopg2.connect(**_load_db_config(), connect_timeout=10)
+        _conn.autocommit = False
+        register_vector(_conn)
+    return _conn
+
+
 def _read_s3_json(key: str) -> Any:
     resp = _get_s3().get_object(Bucket=PIPELINE_BUCKET, Key=key)
     return json.loads(resp["Body"].read().decode("utf-8"))
 
 
 def _delete_s3_prefix(prefix: str) -> None:
-    """Delete all objects under a prefix (pipeline cleanup)."""
     s3 = _get_s3()
     try:
         resp = s3.list_objects_v2(Bucket=PIPELINE_BUCKET, Prefix=prefix)
         for obj in resp.get("Contents", []):
             s3.delete_object(Bucket=PIPELINE_BUCKET, Key=obj["Key"])
     except Exception:
-        pass  # Best-effort cleanup
+        pass
 
 
-# ---------------------------------------------------------------------------
-# DB connection (single connection per Lambda invocation -- not a pool)
-# Use RDS Proxy in production for connection pooling.
-# ---------------------------------------------------------------------------
-
-_conn = None
+def _chunk_id(entry_id: str, chunk_index: int) -> str:
+    return f"{entry_id}:{chunk_index}"
 
 
-def _get_conn():
-    global _conn
-    if _conn is None or _conn.closed:
-        _conn = psycopg2.connect(
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=int(os.environ.get("DB_PORT", "5432")),
-            dbname=os.environ.get("DB_NAME", "vault"),
-            user=os.environ.get("DB_USER", "vault"),
-            password=os.environ.get("DB_PASSWORD", "vault"),
-            connect_timeout=10,
-        )
-        _conn.autocommit = False
-        register_vector(_conn)
-    return _conn
-
-
-# ---------------------------------------------------------------------------
-# Actions
-# ---------------------------------------------------------------------------
-
-
-def _update_status(entry_id: str, status: str) -> None:
+def _update_status(entry_id: str, status: str, user_id: str = "", error: str | None = None) -> None:
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
+            params: list[Any] = [status, status, status, error, status, entry_id]
+            user_filter = ""
+            if user_id:
+                user_filter = " AND user_id = %s"
+                params.append(user_id)
             cur.execute(
-                "UPDATE vault_entries SET index_status = %s, updated_at = NOW() WHERE entry_id = %s",
-                (status, entry_id),
+                f"""
+                UPDATE vault.entries
+                   SET index_status = %s,
+                       cloud_sync_state = CASE
+                           WHEN %s = 'indexed' THEN 'synced'
+                           WHEN %s = 'failed' THEN 'failed'
+                           ELSE cloud_sync_state
+                       END,
+                       index_error = %s,
+                       indexed_at = CASE
+                           WHEN %s = 'indexed' THEN EXTRACT(EPOCH FROM NOW())::bigint
+                           ELSE indexed_at
+                       END,
+                       updated_at = EXTRACT(EPOCH FROM NOW())::bigint
+                 WHERE id = %s{user_filter}
+                """,
+                params,
             )
         conn.commit()
     except Exception:
@@ -114,71 +143,120 @@ def _update_status(entry_id: str, status: str) -> None:
 
 def _store_embeddings(event: dict) -> dict:
     entry_id = event["entry_id"]
-    user_id = event.get("user_id", "")
+    user_id = event["user_id"]
     file_hash = event.get("file_hash", "")
-
-    # Read embeddings from S3
+    s3_key = event.get("s3_key", "")
     embeddings_key = event.get("embeddings_s3_key", f"pipeline/{entry_id}/embeddings.json")
+    print(json.dumps({
+        "event": "vault.pipeline.store.started",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "s3_key": s3_key,
+        "embeddings_s3_key": embeddings_key,
+        "file_hash": file_hash,
+    }))
     embeddings = _read_s3_json(embeddings_key)
+    print(json.dumps({
+        "event": "vault.pipeline.store.embeddings_loaded",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "embedding_count": len(embeddings),
+    }))
 
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            # Idempotent: delete old chunks first
-            cur.execute("DELETE FROM vault_chunks WHERE entry_id = %s", (entry_id,))
+            cur.execute(
+                """
+                SELECT id
+                  FROM vault.entries
+                 WHERE id = %s
+                   AND user_id = %s
+                   AND (%s = '' OR vault_blob_path = %s)
+                """,
+                (entry_id, user_id, s3_key, s3_key),
+            )
+            if cur.fetchone() is None:
+                raise ValueError("Entry ownership or S3 key mismatch")
 
-            # Batch insert
-            import hashlib
+            cur.execute("DELETE FROM vault.chunks_fts WHERE entry_id = %s", (entry_id,))
+            cur.execute("DELETE FROM vault.chunks WHERE entry_id = %s", (entry_id,))
 
             for e in embeddings:
-                chunk_hash = hashlib.sha256(e["content"].encode("utf-8")).hexdigest()
+                chunk_index = int(e["chunk_index"])
+                content = e["content"]
+                chunk_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                chunk_id = _chunk_id(entry_id, chunk_index)
                 cur.execute(
                     """
-                    INSERT INTO vault_chunks
-                      (entry_id, user_id, chunk_index, content, embedding, token_count, chunk_hash)
-                    VALUES (%s, %s, %s, %s, %s::vector, %s, %s)
+                    INSERT INTO vault.chunks
+                      (id, entry_id, user_id, chunk_index, content, embedding, token_count, chunk_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s)
                     ON CONFLICT (entry_id, chunk_index) DO NOTHING
                     """,
                     (
+                        chunk_id,
                         entry_id,
                         user_id,
-                        e["chunk_index"],
-                        e["content"],
+                        chunk_index,
+                        content,
                         e["embedding"],
                         e["token_count"],
                         chunk_hash,
                     ),
                 )
+                cur.execute(
+                    """
+                    INSERT INTO vault.chunks_fts (content, entry_id, chunk_id, user_id)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (content, entry_id, chunk_id, user_id),
+                )
 
-            # Update entry metadata
             cur.execute(
                 """
-                UPDATE vault_entries
-                SET index_status='indexed',
-                    chunk_count=%s,
-                    embedding_model=%s,
-                    chunker_version=%s,
-                    file_hash=%s,
-                    updated_at=NOW()
-                WHERE entry_id=%s
+                UPDATE vault.entries
+                   SET index_status='indexed',
+                       cloud_sync_state='synced',
+                       chunk_count=%s,
+                       embedding_model=%s,
+                       chunker_version=%s,
+                       file_hash=%s,
+                       index_error=NULL,
+                       indexed_at=EXTRACT(EPOCH FROM NOW())::bigint,
+                       updated_at=EXTRACT(EPOCH FROM NOW())::bigint
+                 WHERE id=%s AND user_id=%s
                 """,
-                (len(embeddings), EMBEDDING_MODEL, CHUNKER_VERSION, file_hash, entry_id),
+                (len(embeddings), EMBEDDING_MODEL, CHUNKER_VERSION, file_hash, entry_id, user_id),
             )
 
         conn.commit()
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        print(json.dumps({
+            "event": "vault.pipeline.store.failed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+            "error": str(exc),
+        }))
+        _update_status(entry_id, "failed", user_id, str(exc))
         raise
 
-    # Cleanup intermediate pipeline files
     _delete_s3_prefix(f"pipeline/{entry_id}/")
-
+    print(json.dumps({
+        "event": "vault.pipeline.store.completed",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "chunk_count": len(embeddings),
+        "embedding_model": EMBEDDING_MODEL,
+        "chunker_version": CHUNKER_VERSION,
+    }))
     return {"status": "indexed", "entry_id": entry_id}
 
 
 def _clone_from_source(event: dict) -> dict:
     entry_id = event["entry_id"]
-    user_id = event.get("user_id", "")
+    user_id = event["user_id"]
     file_hash = event.get("file_hash", "")
 
     conn = _get_conn()
@@ -186,12 +264,15 @@ def _clone_from_source(event: dict) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT entry_id, chunker_version, embedding_model, chunk_count
-                FROM vault_entries
-                WHERE file_hash = %s AND index_status = 'indexed' AND entry_id <> %s
-                LIMIT 1
+                SELECT id, chunker_version, embedding_model, chunk_count
+                  FROM vault.entries
+                 WHERE file_hash = %s
+                   AND user_id = %s
+                   AND index_status = 'indexed'
+                   AND id <> %s
+                 LIMIT 1
                 """,
-                (file_hash, entry_id),
+                (file_hash, user_id, entry_id),
             )
             source = cur.fetchone()
             if source is None:
@@ -199,26 +280,43 @@ def _clone_from_source(event: dict) -> dict:
                 return {"status": "failed", "entry_id": entry_id, "error": "No source entry to clone from"}
 
             src_entry_id, chunker_ver, emb_model, chunk_count = source
-
-            cur.execute("DELETE FROM vault_chunks WHERE entry_id = %s", (entry_id,))
+            cur.execute("DELETE FROM vault.chunks_fts WHERE entry_id = %s", (entry_id,))
+            cur.execute("DELETE FROM vault.chunks WHERE entry_id = %s", (entry_id,))
             cur.execute(
                 """
-                INSERT INTO vault_chunks
-                  (entry_id, user_id, chunk_index, content, embedding, token_count, chunk_hash)
-                SELECT %s, %s, chunk_index, content, embedding, token_count, chunk_hash
-                FROM vault_chunks WHERE entry_id = %s
+                INSERT INTO vault.chunks
+                  (id, entry_id, user_id, chunk_index, content, embedding, token_count, chunk_hash)
+                SELECT %s || ':' || chunk_index::text, %s, %s, chunk_index, content, embedding, token_count, chunk_hash
+                  FROM vault.chunks
+                 WHERE entry_id = %s
                 ON CONFLICT (entry_id, chunk_index) DO NOTHING
                 """,
-                (entry_id, user_id, src_entry_id),
+                (entry_id, entry_id, user_id, src_entry_id),
             )
             cur.execute(
                 """
-                UPDATE vault_entries
-                SET chunker_version=%s, embedding_model=%s, file_hash=%s,
-                    chunk_count=%s, index_status='indexed', updated_at=NOW()
-                WHERE entry_id=%s
+                INSERT INTO vault.chunks_fts (content, entry_id, chunk_id, user_id)
+                SELECT content, entry_id, id, user_id
+                  FROM vault.chunks
+                 WHERE entry_id = %s
                 """,
-                (chunker_ver, emb_model, file_hash, chunk_count, entry_id),
+                (entry_id,),
+            )
+            cur.execute(
+                """
+                UPDATE vault.entries
+                   SET chunker_version=%s,
+                       embedding_model=%s,
+                       file_hash=%s,
+                       chunk_count=%s,
+                       index_status='indexed',
+                       cloud_sync_state='synced',
+                       index_error=NULL,
+                       indexed_at=EXTRACT(EPOCH FROM NOW())::bigint,
+                       updated_at=EXTRACT(EPOCH FROM NOW())::bigint
+                 WHERE id=%s AND user_id=%s
+                """,
+                (chunker_ver, emb_model, file_hash, chunk_count, entry_id, user_id),
             )
 
         conn.commit()
@@ -229,27 +327,45 @@ def _clone_from_source(event: dict) -> dict:
     return {"status": "indexed", "entry_id": entry_id}
 
 
-# ---------------------------------------------------------------------------
-# Lambda handler
-# ---------------------------------------------------------------------------
-
-
 def handler(event: dict, context: Any) -> dict:
     action = event.get("action", "store")
     entry_id = event.get("entry_id", "unknown")
+    user_id = event.get("user_id", "")
+    print(json.dumps({
+        "event": "vault.pipeline.store.handler",
+        "entry_id": entry_id,
+        "user_id": user_id,
+        "action": action,
+    }))
 
     if action == "store":
         return _store_embeddings(event)
-    elif action == "mark_indexed":
-        _update_status(entry_id, "indexed")
+    if action == "mark_indexed":
+        _update_status(entry_id, "indexed", user_id)
+        print(json.dumps({
+            "event": "vault.pipeline.store.mark_indexed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+        }))
         return {"status": "indexed", "entry_id": entry_id}
-    elif action == "mark_deleted":
-        _update_status(entry_id, "deleted")
-        return {"status": "deleted", "entry_id": entry_id}
-    elif action == "mark_failed":
-        _update_status(entry_id, "failed")
+    if action == "mark_deleted":
+        _update_status(entry_id, "failed", user_id, "S3 object missing")
+        print(json.dumps({
+            "event": "vault.pipeline.store.mark_missing_s3_failed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+        }))
         return {"status": "failed", "entry_id": entry_id}
-    elif action == "clone":
+    if action == "mark_failed":
+        error = json.dumps(event.get("error", {})) if event.get("error") else None
+        _update_status(entry_id, "failed", user_id, error)
+        print(json.dumps({
+            "event": "vault.pipeline.store.mark_failed",
+            "entry_id": entry_id,
+            "user_id": user_id,
+            "error": error,
+        }))
+        return {"status": "failed", "entry_id": entry_id}
+    if action == "clone":
         return _clone_from_source(event)
-    else:
-        raise ValueError(f"Unknown action: {action}")
+    raise ValueError(f"Unknown action: {action}")

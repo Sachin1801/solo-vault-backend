@@ -40,7 +40,7 @@ def _wait_for(entry_id: str, timeout: int = POLL_TIMEOUT) -> dict:
         r = httpx.get(f"{API_BASE_URL}/jobs/{entry_id}", timeout=10)
         if r.status_code == 200:
             data = r.json()
-            if data["status"] in ("indexed", "failed", "deleted"):
+            if data["status"] in ("indexed", "failed"):
                 return data
         time.sleep(POLL_INTERVAL)
     return httpx.get(f"{API_BASE_URL}/jobs/{entry_id}", timeout=10).json()
@@ -71,7 +71,7 @@ def _submit(entry_id: str, **overrides) -> httpx.Response:
 def _assert_chunks_in_db(db_conn, entry_id: str) -> list:
     cur = db_conn.cursor()
     cur.execute(
-        "SELECT chunk_index, token_count, content FROM vault_chunks "
+        "SELECT chunk_index, token_count, content FROM vault.chunks "
         "WHERE entry_id = %s ORDER BY chunk_index",
         (entry_id,),
     )
@@ -103,7 +103,7 @@ def test_native_pdf_metadata_stored(db_conn):
     cur = db_conn.cursor()
     cur.execute(
         "SELECT chunker_version, embedding_model, file_hash, kind "
-        "FROM vault_entries WHERE entry_id = %s",
+        "FROM vault.entries WHERE id = %s",
         (entry_id,),
     )
     row = cur.fetchone()
@@ -121,7 +121,7 @@ def test_native_pdf_user_id_on_chunks(db_conn):
 
     cur = db_conn.cursor()
     cur.execute(
-        "SELECT DISTINCT user_id FROM vault_chunks WHERE entry_id = %s",
+        "SELECT DISTINCT user_id FROM vault.chunks WHERE entry_id = %s",
         (entry_id,),
     )
     assert cur.fetchone()[0] == "tenant-42"
@@ -208,7 +208,7 @@ def test_confidence_below_threshold_becomes_unsorted(s3_client, test_bucket, sam
     assert resp.status_code == 200
 
     cur = db_conn.cursor()
-    cur.execute("SELECT kind FROM vault_entries WHERE entry_id = %s", (entry_id,))
+    cur.execute("SELECT kind FROM vault.entries WHERE id = %s", (entry_id,))
     row = cur.fetchone()
     assert row is not None
     assert row[0] == "unsorted"
@@ -243,7 +243,7 @@ def test_full_pipeline_stores_chunker_version(db_conn):
 
     cur = db_conn.cursor()
     cur.execute(
-        "SELECT chunker_version FROM vault_entries WHERE entry_id = %s", (entry_id,)
+        "SELECT chunker_version FROM vault.entries WHERE id = %s", (entry_id,)
     )
     assert cur.fetchone()[0] == "1"
 
@@ -251,8 +251,8 @@ def test_full_pipeline_stores_chunker_version(db_conn):
 # ── S3 deletion sync ──────────────────────────────────────────────────────────
 
 
-def test_missing_s3_object_marks_entry_deleted(s3_client, test_bucket, db_conn):
-    """If S3 object is removed between enqueue and validate, entry is marked deleted."""
+def test_missing_s3_object_marks_entry_failed(s3_client, test_bucket, db_conn):
+    """If S3 object is removed between enqueue and validate, entry is marked failed."""
     entry_id = _uid()
     ghost_key = f"test/ghost-{entry_id}.pdf"
 
@@ -271,7 +271,7 @@ def test_missing_s3_object_marks_entry_deleted(s3_client, test_bucket, db_conn):
     assert resp.status_code == 200
 
     result = _wait_for(entry_id, timeout=60)
-    assert result["status"] == "deleted"
+    assert result["status"] == "failed"
 
 
 # ── Original integration tests (preserved) ───────────────────────────────────
@@ -308,7 +308,7 @@ def test_full_pipeline_pdf(s3_client, test_bucket, db_conn, sample_pdf):
     for _ in range(POLL_TIMEOUT // POLL_INTERVAL):
         status_resp = httpx.get(f"{API_BASE_URL}/jobs/{job_id}", timeout=10)
         status = status_resp.json()["status"]
-        if status in ("indexed", "failed", "deleted"):
+        if status in ("indexed", "failed"):
             break
         time.sleep(POLL_INTERVAL)
 
@@ -316,7 +316,7 @@ def test_full_pipeline_pdf(s3_client, test_bucket, db_conn, sample_pdf):
 
     cur = db_conn.cursor()
     cur.execute(
-        "SELECT chunk_index, token_count FROM vault_chunks "
+        "SELECT chunk_index, token_count FROM vault.chunks "
         "WHERE entry_id = %s ORDER BY chunk_index",
         ("test-entry-001",),
     )
@@ -325,14 +325,14 @@ def test_full_pipeline_pdf(s3_client, test_bucket, db_conn, sample_pdf):
     assert rows[0][0] == 0
 
     cur.execute(
-        "SELECT chunker_version, embedding_model FROM vault_entries WHERE entry_id = %s",
+        "SELECT chunker_version, embedding_model FROM vault.entries WHERE id = %s",
         ("test-entry-001",),
     )
     meta = cur.fetchone()
     assert meta[0] == "1"
 
     cur.execute(
-        "SELECT DISTINCT user_id FROM vault_chunks WHERE entry_id = %s",
+        "SELECT DISTINCT user_id FROM vault.chunks WHERE entry_id = %s",
         ("test-entry-001",),
     )
     assert cur.fetchone()[0] == "user-1"

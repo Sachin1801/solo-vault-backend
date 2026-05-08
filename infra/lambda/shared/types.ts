@@ -72,4 +72,14 @@ export interface VaultEntry {
   last_retrieved_at: number | null;
   created_at: number; // epoch seconds
   updated_at: number;
+  file_hash: string | null;
+  chunk_count: number;
+  embedding_model: string | null;
+  chunker_version: string | null;
+  index_error: string | null;
+  uploaded_at: number | null;
+  indexed_at: number | null;
+  owner_user_id: string | null;
+  organization_id: string | null;
+  project_id: string | null;
 }

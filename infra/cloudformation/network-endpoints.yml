@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Solo Vault VPC interface endpoints (Secrets Manager + CloudWatch Logs)
+Description: Solo Vault VPC endpoints for private Lambda/ECS access to AWS APIs
 
 # Why this exists:
 #   The Lambda functions live in private subnets with no NAT gateway. Without
@@ -7,13 +7,9 @@ Description: Solo Vault VPC interface endpoints (Secrets Manager + CloudWatch Lo
 #   Interface endpoints put a private ENI inside our VPC that resolves to the
 #   AWS service over the AWS backbone — no public traffic, no NAT cost.
 #
-# Single-AZ: endpoints live only in private-subnet-a to halve hourly cost
-# (~$0.01/hr per endpoint per AZ). Lambdas using these endpoints must also
-# be deployed only into private-subnet-a — an ENI in subnet-b cannot reach
-# an endpoint that doesn't exist in subnet-b. HA can be added later by
-# putting endpoints in both subnets.
-#
-# Cost: 2 endpoints × 1 AZ × ~$7.20/mo + per-GB data ≈ $14-16/mo.
+# Endpoints are deployed in both private subnets because Vault CRUD, fn-store,
+# and ECS embed tasks run without NAT. S3 is a gateway endpoint on the private
+# route table; AWS API endpoints use interface endpoints with private DNS.
 
 Parameters:
   ProjectPrefix:
@@ -59,6 +55,7 @@ Resources:
         Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
       SubnetIds:
         - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
       # Required so the standard SDK URL (secretsmanager.us-east-1.amazonaws.com)
@@ -75,9 +72,90 @@ Resources:
         Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
       SubnetIds:
         - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
       PrivateDnsEnabled: true
+
+  StepFunctionsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.states"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  SqsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sqs"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.lambda"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-a-id"
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-subnet-b-id"
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vpc-id"
+      RouteTableIds:
+        - Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-private-route-table-id"
 
 Outputs:
   EndpointSecurityGroupId:
@@ -88,3 +166,15 @@ Outputs:
     Value: !Ref SecretsManagerEndpoint
   CloudWatchLogsEndpointId:
     Value: !Ref CloudWatchLogsEndpoint
+  StepFunctionsEndpointId:
+    Value: !Ref StepFunctionsEndpoint
+  SqsEndpointId:
+    Value: !Ref SqsEndpoint
+  LambdaEndpointId:
+    Value: !Ref LambdaEndpoint
+  EcrApiEndpointId:
+    Value: !Ref EcrApiEndpoint
+  EcrDkrEndpointId:
+    Value: !Ref EcrDkrEndpoint
+  S3GatewayEndpointId:
+    Value: !Ref S3GatewayEndpoint

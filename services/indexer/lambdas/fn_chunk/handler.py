@@ -4,10 +4,10 @@ Lambda handler: fn-chunk
 Pure computation -- no external service dependencies beyond tiktoken.
 
 Reads extracted text (from SFN payload or S3 ref), applies kind-aware
-chunking, and returns chunks array (or S3 ref if too large).
+chunking, and writes chunk payload to S3 for the embed ECS task.
 
 Input:  Event with extracted_text (inline) or text_s3_key (S3 ref)
-Output: Event + { chunks: [...] | chunks_s3_key, chunk_count }
+Output: Event + { chunks_s3_key, chunk_count }
 """
 
 from __future__ import annotations
@@ -214,6 +214,13 @@ CHUNK_DISPATCH = {
 def handler(event: dict, context: Any) -> dict:
     entry_id = event["entry_id"]
     kind = event.get("kind", "unsorted")
+    print(json.dumps({
+        "event": "vault.pipeline.chunk.started",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "kind": kind,
+        "has_text_s3_key": "text_s3_key" in event,
+    }))
 
     # 1. Read extracted text (from SFN payload or S3 ref)
     if "text_s3_key" in event:
@@ -228,6 +235,14 @@ def handler(event: dict, context: Any) -> dict:
     # 2. Chunk using kind-dispatched strategy
     chunker = CHUNK_DISPATCH.get(kind, chunk_sliding)
     chunks = chunker(extracted_text)
+    print(json.dumps({
+        "event": "vault.pipeline.chunk.chunked",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "kind": kind,
+        "text_chars": len(extracted_text),
+        "chunk_count": len(chunks),
+    }))
 
     # Re-index sequentially
     for i, c in enumerate(chunks):
@@ -248,21 +263,33 @@ def handler(event: dict, context: Any) -> dict:
     }
 
     payload_bytes = json.dumps(chunks_data).encode("utf-8")
-    if len(payload_bytes) > S3_DATA_BUS_THRESHOLD:
-        chunks_s3_key = f"pipeline/{entry_id}/chunks.json"
-        _get_s3().put_object(
-            Bucket=PIPELINE_BUCKET,
-            Key=chunks_s3_key,
-            Body=payload_bytes,
-            ContentType="application/json",
-        )
-        result["chunks_s3_key"] = chunks_s3_key
-    else:
-        result["chunks"] = chunks_data
+    chunks_s3_key = f"pipeline/{entry_id}/chunks.json"
+    _get_s3().put_object(
+        Bucket=PIPELINE_BUCKET,
+        Key=chunks_s3_key,
+        Body=payload_bytes,
+        ContentType="application/json",
+    )
+    result["chunks_s3_key"] = chunks_s3_key
+    print(json.dumps({
+        "event": "vault.pipeline.chunk.chunks_stored",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "chunks_s3_key": chunks_s3_key,
+        "payload_bytes": len(payload_bytes),
+        "forced_s3_handoff": True,
+    }))
 
     # Clean up text_s3_key reference (no longer needed downstream)
     # Keep it in result so Store can clean up intermediate files
     if "text_s3_key" in event:
         result["text_s3_key"] = event["text_s3_key"]
 
+    print(json.dumps({
+        "event": "vault.pipeline.chunk.completed",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "chunk_count": len(chunks),
+        "payload_bytes": len(payload_bytes),
+    }))
     return result

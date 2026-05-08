@@ -117,66 +117,12 @@
 
     "Embed": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
       "Parameters": {
-        "LaunchType": "FARGATE",
-        "Cluster": "${EcsClusterArn}",
-        "TaskDefinition": "${EmbedTaskDefArn}",
-        "NetworkConfiguration": {
-          "AwsvpcConfiguration": {
-            "Subnets": "${PrivateSubnets}",
-            "SecurityGroups": ["${LambdaSecurityGroup}"],
-            "AssignPublicIp": "DISABLED"
-          }
-        },
-        "Overrides": {
-          "ContainerOverrides": [
-            {
-              "Name": "embed",
-              "Environment": [
-                { "Name": "INPUT_S3_KEY", "Value.$": "$.chunks_s3_key" },
-                { "Name": "OUTPUT_S3_KEY", "Value.$": "$.embeddings_s3_key" },
-                { "Name": "ENTRY_ID", "Value.$": "$.entry_id" },
-                { "Name": "S3_BUCKET", "Value.$": "$.bucket" }
-              ]
-            }
-          ]
-        }
+        "QueueUrl": "${EmbedQueueUrl}",
+        "MessageBody.$": "States.JsonToString($)"
       },
-      "ResultPath": "$.ecsResult",
-      "TimeoutSeconds": 600,
-      "Retry": [
-        {
-          "ErrorEquals": ["States.TaskFailed"],
-          "MaxAttempts": 1,
-          "IntervalSeconds": 10,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "MarkFailed"
-        }
-      ],
-      "Next": "Store"
-    },
-
-    "Store": {
-      "Type": "Task",
-      "Resource": "${FnStoreArn}",
-      "Parameters": {
-        "action": "store",
-        "entry_id.$": "$.entry_id",
-        "user_id.$": "$.user_id",
-        "file_hash.$": "$.file_hash",
-        "embeddings_s3_key.$": "$.embeddings_s3_key",
-        "text_s3_key.$": "$.text_s3_key",
-        "chunks_s3_key.$": "$.chunks_s3_key"
-      },
-      "ResultPath": "$",
-      "TimeoutSeconds": 120,
+      "ResultPath": "$.embedQueueResult",
       "Retry": [
         {
           "ErrorEquals": ["States.TaskFailed"],
@@ -223,6 +169,7 @@
       "Parameters": {
         "action": "mark_failed",
         "entry_id.$": "$.entry_id",
+        "user_id.$": "$.user_id",
         "error.$": "$.error"
       },
       "End": true

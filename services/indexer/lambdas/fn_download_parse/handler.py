@@ -14,9 +14,11 @@ Errors: ALREADY_INDEXED (caught by SFN -> CloneFromSource)
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -86,36 +88,150 @@ def _download(bucket: str, key: str, entry_id: str, file_name: str) -> tuple[str
 
 
 # ---------------------------------------------------------------------------
-# Parse dispatcher (import from app package if available, else minimal fallback)
+# Parse dispatcher.
+#
+# Keep this Lambda standalone. Importing app.pipeline.parse pulls app.config,
+# which validates local DB/MinIO settings that are intentionally absent in AWS.
 # ---------------------------------------------------------------------------
 
 
-def _parse(kind: str, local_path: str) -> str:
-    """Try to import the full parser from the app package. Fall back to raw text."""
-    try:
-        from app.pipeline.parse import parse as full_parse
-        from app.types import PipelineJob
+def _normalize(text: str) -> str:
+    lines = [line.rstrip() for line in text.splitlines()]
+    normalized = "\n".join(lines)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
 
-        # Build a minimal PipelineJob for the parser dispatcher
-        job = PipelineJob(
-            job_id="",
-            entry_id="",
-            user_id="",
-            s3_key="",
-            bucket="",
-            file_name=Path(local_path).name,
-            mime="",
-            kind=kind,
-            subkind="",
-            size_bytes=0,
-        )
-        return full_parse(job, local_path)
-    except ImportError:
-        # Minimal fallback: raw text read
-        try:
-            return Path(local_path).read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return "[Binary file]"
+
+def _read_text(local_path: str) -> str:
+    path = Path(local_path)
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="latin-1", errors="replace")
+
+
+def _parse_pdf(local_path: str) -> str:
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(local_path)
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
+        text = "\n\n".join(page for page in pages if page)
+        if text:
+            return text
+    except Exception as exc:
+        print(json.dumps({
+            "event": "vault.pipeline.download_parse.pdf_extract_failed",
+            "file_name": Path(local_path).name,
+            "error": str(exc),
+        }))
+    return f"[PDF text extraction produced no readable text: {Path(local_path).name}]"
+
+
+def _parse_docx(local_path: str) -> str:
+    from docx import Document
+
+    doc = Document(local_path)
+    return "\n".join(
+        paragraph.text.strip()
+        for paragraph in doc.paragraphs
+        if paragraph.text and paragraph.text.strip()
+    )
+
+
+def _rows_to_lines(headers: list[str], rows: list[list[str]]) -> str:
+    lines: list[str] = []
+    for row in rows:
+        values = [row[i] if i < len(row) else "" for i in range(len(headers))]
+        lines.append(", ".join(f"{header}={value}" for header, value in zip(headers, values)))
+    return "\n".join(lines)
+
+
+def _parse_data(local_path: str) -> str:
+    path = Path(local_path)
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        with path.open(newline="", encoding="utf-8", errors="replace") as f:
+            rows = list(csv.reader(f))
+        if not rows:
+            return ""
+        headers = rows[0]
+        return f"Columns: {', '.join(headers)}\n\nSample rows:\n{_rows_to_lines(headers, rows[1:101])}"
+    if suffix == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            keys = list(data.keys())
+            sample = {key: data[key] for key in keys[:3]}
+            return f"JSON keys: {', '.join(keys)}\nSample: {json.dumps(sample, ensure_ascii=False)}"
+        return json.dumps(data[:3] if isinstance(data, list) else data, ensure_ascii=False)
+    if suffix in {".yaml", ".yml"}:
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            keys = list(data.keys())
+            sample = {key: data[key] for key in keys[:3]}
+            return f"YAML keys: {', '.join(keys)}\nSample: {json.dumps(sample, ensure_ascii=False)}"
+        return str(data)
+    return _read_text(local_path)
+
+
+def _parse_html(local_path: str) -> str:
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(_read_text(local_path), "html.parser")
+    return soup.get_text("\n")
+
+
+def _parse_code(local_path: str) -> str:
+    path = Path(local_path)
+    return f"File: {path.name}\n\n{_read_text(local_path)}"
+
+
+def _parse(kind: str, local_path: str) -> str:
+    path = Path(local_path)
+    suffix = path.suffix.lower()
+    parser = "text"
+    try:
+        if suffix == ".pdf":
+            parser = "pdf"
+            text = _parse_pdf(local_path)
+        elif suffix == ".docx":
+            parser = "docx"
+            text = _parse_docx(local_path)
+        elif suffix in {".csv", ".json", ".yaml", ".yml", ".toml"}:
+            parser = "data"
+            text = _parse_data(local_path)
+        elif suffix in {".html", ".htm"}:
+            parser = "html"
+            text = _parse_html(local_path)
+        elif suffix in {
+            ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java", ".kt",
+            ".swift", ".c", ".cc", ".cpp", ".h", ".hpp", ".m", ".mm", ".rb",
+            ".php", ".cs", ".sh", ".zsh", ".sql", ".css", ".scss", ".md",
+            ".txt", ".rtf", ".log", ".env", ".ini",
+        }:
+            parser = "code" if kind in {"code", "snippet"} else "text"
+            text = _parse_code(local_path) if parser == "code" else _read_text(local_path)
+        else:
+            parser = "fallback"
+            text = _read_text(local_path)
+    except Exception as exc:
+        print(json.dumps({
+            "event": "vault.pipeline.download_parse.parse_failed",
+            "file_name": path.name,
+            "kind": kind,
+            "parser": parser,
+            "error": str(exc),
+        }))
+        text = f"[File could not be parsed as text: {path.name}]"
+    print(json.dumps({
+        "event": "vault.pipeline.download_parse.parser_selected",
+        "file_name": path.name,
+        "kind": kind,
+        "parser": parser,
+    }))
+    return _normalize(text)
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +245,34 @@ def handler(event: dict, context: Any) -> dict:
     s3_key = event["s3_key"]
     file_name = event["file_name"]
     kind = event.get("kind", "unsorted")
+    print(json.dumps({
+        "event": "vault.pipeline.download_parse.started",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "bucket": bucket,
+        "s3_key": s3_key,
+        "file_name": file_name,
+        "kind": kind,
+    }))
 
     # 1. Download
     local_path, fhash = _download(bucket, s3_key, entry_id, file_name)
+    print(json.dumps({
+        "event": "vault.pipeline.download_parse.downloaded",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "s3_key": s3_key,
+        "file_hash": fhash,
+    }))
 
     # 2. Parse
     extracted_text = _parse(kind, local_path)
+    print(json.dumps({
+        "event": "vault.pipeline.download_parse.parsed",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "text_chars": len(extracted_text),
+    }))
 
     # 3. Clean up /tmp
     try:
@@ -155,7 +293,21 @@ def handler(event: dict, context: Any) -> dict:
             ContentType="application/json",
         )
         result["text_s3_key"] = text_s3_key
+        print(json.dumps({
+            "event": "vault.pipeline.download_parse.text_stored",
+            "entry_id": entry_id,
+            "user_id": event.get("user_id", ""),
+            "text_s3_key": text_s3_key,
+            "text_bytes": len(text_bytes),
+        }))
     else:
         result["extracted_text"] = extracted_text
 
+    print(json.dumps({
+        "event": "vault.pipeline.download_parse.completed",
+        "entry_id": entry_id,
+        "user_id": event.get("user_id", ""),
+        "file_hash": fhash,
+        "text_bytes": len(text_bytes),
+    }))
     return result

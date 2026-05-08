@@ -72,6 +72,8 @@ function getPipelineStacks(env: Environment, projectPrefix: string): StackDef[] 
   const placeholder = "arn:aws:lambda:us-east-1:000000000000:function:placeholder";
   const ecsPlaceholder = "arn:aws:ecs:us-east-1:000000000000:cluster/placeholder";
   const taskPlaceholder = "arn:aws:ecs:us-east-1:000000000000:task-definition/placeholder:1";
+  const queuePlaceholder = "https://sqs.us-east-1.amazonaws.com/000000000000/placeholder";
+  const queueArnPlaceholder = "arn:aws:sqs:us-east-1:000000000000:placeholder";
 
   return [
     // 1. SQS — no dependencies
@@ -95,9 +97,12 @@ function getPipelineStacks(env: Environment, projectPrefix: string): StackDef[] 
         FnDownloadParseArn: placeholder,
         FnChunkArn: placeholder,
         FnStoreArn: placeholder,
+        EmbedQueueArn: queueArnPlaceholder,
+        EmbedQueueUrl: queuePlaceholder,
         EcsClusterArn: ecsPlaceholder,
         EmbedTaskDefArn: taskPlaceholder,
-        PrivateSubnets: "subnet-placeholder",
+        PrivateSubnetA: "subnet-placeholder-a",
+        PrivateSubnetB: "subnet-placeholder-b",
         LambdaSecurityGroup: "sg-placeholder",
       },
       capabilities: ["CAPABILITY_NAMED_IAM"],

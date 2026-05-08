@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Solo Vault — Pipeline Lambda functions + IAM roles + ECR repos.
+  Solo Vault — Pipeline Lambda functions + IAM roles + ECS task definition.
   Deploys: fn-validate, fn-download-parse, fn-chunk, fn-store, sqs-starter.
 
 Parameters:
@@ -28,6 +28,15 @@ Parameters:
   IndexQueueUrl:
     Type: String
     Description: SQS index queue URL
+  EmbedQueueArn:
+    Type: String
+    Description: SQS queue ARN for warm embed jobs
+  EmbedQueueUrl:
+    Type: String
+    Description: SQS queue URL for warm embed jobs
+  EmbedQueueName:
+    Type: String
+    Description: SQS queue name for warm embed jobs
   StateMachineArn:
     Type: String
     Description: Step Functions state machine ARN
@@ -38,31 +47,22 @@ Parameters:
   S3BucketName:
     Type: String
     Default: solo-vault-vault-dev
+  DownloadParseImageUri:
+    Type: String
+    Description: Existing ECR image URI for fn-download-parse, including tag
+  EmbedImageUri:
+    Type: String
+    Description: Existing ECR image URI for the embed ECS task, including tag
+  EmbedDesiredCount:
+    Type: Number
+    Default: 1
+    Description: Minimum warm embed workers to keep running
+  EmbedMaxCapacity:
+    Type: Number
+    Default: 2
+    Description: Maximum warm embed workers for queue-depth autoscaling
 
 Resources:
-  # =====================================================================
-  # ECR Repositories (for container-image Lambdas and ECS)
-  # =====================================================================
-  EcrDownloadParse:
-    Type: AWS::ECR::Repository
-    Properties:
-      RepositoryName: !Sub '${ProjectPrefix}-fn-download-parse-${Environment}'
-      ImageScanningConfiguration:
-        ScanOnPush: true
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}
-
-  EcrEmbed:
-    Type: AWS::ECR::Repository
-    Properties:
-      RepositoryName: !Sub '${ProjectPrefix}-fn-embed-${Environment}'
-      ImageScanningConfiguration:
-        ScanOnPush: true
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}
-
   # =====================================================================
   # IAM Role — shared by all pipeline Lambdas
   # =====================================================================
@@ -91,10 +91,29 @@ Resources:
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:ListBucket
-                  - s3:HeadObject
                 Resource:
                   - !Sub 'arn:aws:s3:::${S3BucketName}'
                   - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+        - PolicyName: KmsForVaultFiles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource:
+                  Fn::ImportValue: !Sub '${ProjectPrefix}-${Environment}-s3-cmk-arn'
+        - PolicyName: KmsForDbSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource:
+                  Fn::ImportValue: !Sub '${ProjectPrefix}-${Environment}-rds-cmk-arn'
         - PolicyName: SQSAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -165,6 +184,35 @@ Resources:
                   - s3:DeleteObject
                 Resource:
                   - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+        - PolicyName: EmbedQueueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !Ref EmbedQueueArn
+        - PolicyName: StoreLambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt FnStore.Arn
+        - PolicyName: KmsForVaultFiles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource:
+                  Fn::ImportValue: !Sub '${ProjectPrefix}-${Environment}-s3-cmk-arn'
         - PolicyName: CloudWatchLogs
           PolicyDocument:
             Version: '2012-10-17'
@@ -210,10 +258,16 @@ Resources:
                       size = s3_info.get("object", {}).get("size", 0)
                       if not bucket or not key:
                           continue
-                      entry_id = key.replace("/", "-")
+                      parts = key.split("/")
+                      if len(parts) >= 6 and parts[0] == "users" and parts[2] == "entries" and parts[4] == "objects":
+                          user_id = parts[1]
+                          entry_id = parts[3]
+                      else:
+                          user_id = "unknown"
+                          entry_id = key.replace("/", "-")
                       sfn_input = {
                           "entry_id": entry_id,
-                          "user_id": key.split("/")[1] if "/" in key else "unknown",
+                          "user_id": user_id,
                           "s3_key": key,
                           "bucket": bucket,
                           "file_name": key.split("/")[-1],
@@ -299,6 +353,8 @@ Resources:
     Properties:
       FunctionName: !Sub '${ProjectPrefix}-fn-download-parse-${Environment}'
       PackageType: Image
+      Architectures:
+        - x86_64
       MemorySize: 2048
       Timeout: 900
       Role: !GetAtt PipelineLambdaRole.Arn
@@ -306,8 +362,16 @@ Resources:
         Variables:
           S3_REGION: us-east-1
           S3_BUCKET: !Ref S3BucketName
+          # Compatibility for older fn-download-parse images that import
+          # app.config at parser load time. Newer images parse standalone.
+          db_host: unused
+          db_user: unused
+          db_password: unused
+          s3_access_key: unused
+          s3_secret_key: unused
+          PARSER_PREFER_DOCLING: 'false'
       Code:
-        ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrDownloadParse}:latest'
+        ImageUri: !Ref DownloadParseImageUri
       Tags:
         - Key: Project
           Value: !Ref ProjectPrefix
@@ -346,6 +410,41 @@ Resources:
           Value: !Ref ProjectPrefix
 
   # =====================================================================
+  # Lambda: fn-query-embed (synchronous BGE-M3 query embedding)
+  # =====================================================================
+  FnQueryEmbed:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectPrefix}-fn-query-embed-${Environment}'
+      PackageType: Image
+      Architectures:
+        - x86_64
+      MemorySize: 8192
+      Timeout: 60
+      Role: !GetAtt PipelineLambdaRole.Arn
+      Environment:
+        Variables:
+          S3_REGION: us-east-1
+          EMBEDDING_MODEL: BAAI/bge-m3
+          EMBEDDING_DIM: '384'
+          PYTHONUNBUFFERED: '1'
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          HF_HUB_DISABLE_TELEMETRY: '1'
+      Code:
+        ImageUri: !Ref EmbedImageUri
+      ImageConfig:
+        EntryPoint:
+          - python
+          - -m
+          - awslambdaric
+        Command:
+          - entrypoint.handler
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  # =====================================================================
   # ECS Cluster + Task Definition for fn-embed
   # =====================================================================
   EmbedCluster:
@@ -370,25 +469,44 @@ Resources:
     Properties:
       Family: !Sub '${ProjectPrefix}-fn-embed-${Environment}'
       Cpu: '2048'
-      Memory: '4096'
+      Memory: '8192'
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
       ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
       TaskRoleArn: !GetAtt EcsTaskRole.Arn
       ContainerDefinitions:
         - Name: embed
-          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrEmbed}:latest'
+          Image: !Ref EmbedImageUri
           Essential: true
           Environment:
             - Name: S3_REGION
               Value: us-east-1
             - Name: S3_BUCKET
               Value: !Ref S3BucketName
+            - Name: EMBED_QUEUE_URL
+              Value: !Ref EmbedQueueUrl
+            - Name: STORE_FUNCTION_NAME
+              Value: !Ref FnStore
             - Name: EMBEDDING_MODEL
               Value: BAAI/bge-m3
             - Name: EMBEDDING_DIM
-              Value: '1024'
+              Value: '384'
+            - Name: EMBED_JOB_VISIBILITY_TIMEOUT
+              Value: '1800'
+            - Name: EMBED_JOB_MAX_ATTEMPTS
+              Value: '3'
+            - Name: PYTHONUNBUFFERED
+              Value: '1'
+            - Name: HF_HUB_OFFLINE
+              Value: '1'
+            - Name: TRANSFORMERS_OFFLINE
+              Value: '1'
+            - Name: HF_HUB_DISABLE_TELEMETRY
+              Value: '1'
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -398,6 +516,59 @@ Resources:
       Tags:
         - Key: Project
           Value: !Ref ProjectPrefix
+
+  EmbedService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${ProjectPrefix}-embed-worker-${Environment}'
+      Cluster: !Ref EmbedCluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref EmbedDesiredCount
+      TaskDefinition: !Ref EmbedTaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 200
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PrivateSubnetA
+            - !Ref PrivateSubnetB
+          SecurityGroups:
+            - !Ref LambdaSecurityGroup
+          AssignPublicIp: DISABLED
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectPrefix
+        - Key: Environment
+          Value: !Ref Environment
+
+  EmbedWorkerScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: EmbedService
+    Properties:
+      MaxCapacity: !Ref EmbedMaxCapacity
+      MinCapacity: !Ref EmbedDesiredCount
+      ResourceId: !Sub 'service/${ProjectPrefix}-embed-cluster-${Environment}/${ProjectPrefix}-embed-worker-${Environment}'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  EmbedWorkerScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectPrefix}-embed-worker-queue-depth-${Environment}'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref EmbedWorkerScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 1.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        CustomizedMetricSpecification:
+          Namespace: AWS/SQS
+          MetricName: ApproximateNumberOfMessagesVisible
+          Dimensions:
+            - Name: QueueName
+              Value: !Ref EmbedQueueName
+          Statistic: Average
 
 Outputs:
   PipelineLambdaRoleArn:
@@ -420,6 +591,14 @@ Outputs:
     Value: !GetAtt FnStore.Arn
     Export:
       Name: !Sub '${ProjectPrefix}-fn-store-arn-${Environment}'
+  FnQueryEmbedArn:
+    Value: !GetAtt FnQueryEmbed.Arn
+    Export:
+      Name: !Sub '${ProjectPrefix}-fn-query-embed-arn-${Environment}'
+  FnQueryEmbedName:
+    Value: !Ref FnQueryEmbed
+    Export:
+      Name: !Sub '${ProjectPrefix}-fn-query-embed-name-${Environment}'
   EcsClusterArn:
     Value: !GetAtt EmbedCluster.Arn
     Export:
@@ -429,6 +608,6 @@ Outputs:
     Export:
       Name: !Sub '${ProjectPrefix}-embed-taskdef-arn-${Environment}'
   EcrDownloadParseUri:
-    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrDownloadParse}'
+    Value: !Ref DownloadParseImageUri
   EcrEmbedUri:
-    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrEmbed}'
+    Value: !Ref EmbedImageUri

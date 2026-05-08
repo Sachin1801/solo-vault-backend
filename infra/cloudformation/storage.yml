@@ -33,6 +33,8 @@ Resources:
           - AllowedHeaders:
               - "*"
             AllowedMethods:
+              - GET
+              - HEAD
               - PUT
             AllowedOrigins:
               - "*"

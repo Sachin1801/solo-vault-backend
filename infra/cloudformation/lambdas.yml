@@ -66,6 +66,22 @@ Resources:
                   - kms:Decrypt
                 Resource:
                   Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-s3-cmk-arn"
+        - PolicyName: start-vault-index-pipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectPrefix}-index-pipeline-${EnvironmentName}"
+        - PolicyName: invoke-vault-query-embed
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectPrefix}-fn-query-embed-${EnvironmentName}"
       Tags:
         - Key: Project
           Value: !Ref ProjectPrefix
@@ -97,6 +113,8 @@ Resources:
             Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-db-credentials-arn"
           VAULT_FILES_BUCKET:
             Fn::ImportValue: !Sub "${ProjectPrefix}-${EnvironmentName}-vault-files-bucket"
+          VAULT_INDEX_STATE_MACHINE_ARN: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${ProjectPrefix}-index-pipeline-${EnvironmentName}"
+          VAULT_QUERY_EMBED_FUNCTION_NAME: !Sub "${ProjectPrefix}-fn-query-embed-${EnvironmentName}"
           AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1"
       Tags:
         - Key: Project

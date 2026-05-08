@@ -60,6 +60,30 @@ Resources:
         - Key: Project
           Value: !Ref ProjectPrefix
 
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SharedVpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectPrefix}-${EnvironmentName}-private-rt"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Project
+          Value: !Ref ProjectPrefix
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -115,3 +139,7 @@ Outputs:
     Value: !Ref RdsSecurityGroup
     Export:
       Name: !Sub "${ProjectPrefix}-${EnvironmentName}-rds-sg-id"
+  PrivateRouteTableId:
+    Value: !Ref PrivateRouteTable
+    Export:
+      Name: !Sub "${ProjectPrefix}-${EnvironmentName}-private-route-table-id"
