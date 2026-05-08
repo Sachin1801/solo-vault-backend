@@ -1,4 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { z } from "zod";
 import { created } from "../shared/response.js";
 import { ApiError } from "../shared/errors.js";
@@ -12,6 +13,23 @@ import {
   SCOPE_TYPES,
   type VaultEntry
 } from "../shared/types.js";
+
+const QUERY_EMBED_FUNCTION_NAME =
+  process.env.VAULT_QUERY_EMBED_FUNCTION_NAME ??
+  process.env.QUERY_EMBED_FUNCTION_NAME ??
+  "";
+const EMBEDDING_MODEL = "BAAI/bge-m3";
+const EMBEDDING_DIM = 384;
+const CHUNKER_VERSION = "1";
+const CHUNK_WORDS = 500;
+const CHUNK_OVERLAP_WORDS = 50;
+
+let lambdaClient: LambdaClient | null = null;
+
+function getLambdaClient(): LambdaClient {
+  lambdaClient ??= new LambdaClient({});
+  return lambdaClient;
+}
 
 // tags is stored as a JSON-string in vault.entries (local-parity). Validate
 // that it parses to a string[] but keep storing as text — pgsql casts on read
@@ -59,6 +77,115 @@ const CreateRequest = z
       data.scope_type === "global" ? !data.scope_project_id : true,
     { message: "scope_project_id must be omitted when scope_type='global'", path: ["scope_project_id"] }
   );
+
+function vectorLiteral(values: number[]): string {
+  if (values.length !== EMBEDDING_DIM) {
+    throw new Error(`embedding must have ${EMBEDDING_DIM} dimensions`);
+  }
+  return `[${values.map((value) => Number(value)).join(",")}]`;
+}
+
+function chunkText(text: string): Array<{ content: string; token_count: number }> {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const step = Math.max(1, CHUNK_WORDS - CHUNK_OVERLAP_WORDS);
+  const chunks: Array<{ content: string; token_count: number }> = [];
+  for (let i = 0; i < words.length;) {
+    const end = Math.min(words.length, i + CHUNK_WORDS);
+    const content = words.slice(i, end).join(" ");
+    chunks.push({
+      content,
+      token_count: Math.round(content.split(/\s+/).filter(Boolean).length * 1.3)
+    });
+    if (end === words.length) break;
+    i += step;
+  }
+  return chunks;
+}
+
+async function embedInlineChunk(content: string): Promise<number[] | null> {
+  if (!QUERY_EMBED_FUNCTION_NAME) return null;
+  try {
+    const response = await getLambdaClient().send(
+      new InvokeCommand({
+        FunctionName: QUERY_EMBED_FUNCTION_NAME,
+        InvocationType: "RequestResponse",
+        Payload: Buffer.from(JSON.stringify({ query: content }))
+      })
+    );
+    const raw = Buffer.from(response.Payload ?? new Uint8Array()).toString("utf-8");
+    if (response.FunctionError) {
+      console.warn("vault create inline embedding failed", raw || response.FunctionError);
+      return null;
+    }
+    const payload = raw ? JSON.parse(raw) : {};
+    const parsed = z
+      .object({
+        embedding: z.array(z.number()).length(EMBEDDING_DIM),
+        embedding_model: z.literal(EMBEDDING_MODEL),
+        embedding_dim: z.literal(EMBEDDING_DIM)
+      })
+      .safeParse(payload);
+    return parsed.success ? parsed.data.embedding : null;
+  } catch (error) {
+    console.warn("vault create inline embedding failed", error);
+    return null;
+  }
+}
+
+async function indexInlineContent(entry: VaultEntry, userId: string, content: string): Promise<VaultEntry> {
+  const chunks = chunkText(content);
+  if (chunks.length === 0) return entry;
+
+  let embedded = 0;
+  for (const [index, chunk] of chunks.entries()) {
+    const chunkId = `${entry.id}:${index}`;
+    const embedding = await embedInlineChunk(chunk.content);
+    if (embedding) embedded += 1;
+    await query(
+      `INSERT INTO vault.chunks
+         (id, entry_id, user_id, chunk_index, content, embedding, token_count, chunk_hash)
+       VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8)
+       ON CONFLICT (entry_id, chunk_index) DO NOTHING`,
+      [
+        chunkId,
+        entry.id,
+        userId,
+        index,
+        chunk.content,
+        embedding ? vectorLiteral(embedding) : null,
+        chunk.token_count,
+        null
+      ]
+    );
+    await query(
+      `INSERT INTO vault.chunks_fts (content, entry_id, chunk_id, user_id)
+       VALUES ($1, $2, $3, $4)`,
+      [chunk.content, entry.id, chunkId, userId]
+    );
+  }
+
+  const updated = await query<VaultEntry>(
+    `UPDATE vault.entries
+        SET chunk_count = $1,
+            embedding_model = $2,
+            chunker_version = $3,
+            indexed_at = $4,
+            updated_at = $4
+      WHERE id = $5 AND user_id = $6
+      RETURNING *`,
+    [
+      chunks.length,
+      embedded > 0 ? EMBEDDING_MODEL : null,
+      embedded > 0 ? CHUNKER_VERSION : null,
+      Math.floor(Date.now() / 1000),
+      entry.id,
+      userId
+    ]
+  );
+
+  return updated[0] ?? entry;
+}
 
 export async function createEntry(
   event: APIGatewayProxyEvent,
@@ -125,5 +252,10 @@ export async function createEntry(
     ]
   );
 
-  return created(rows[0]);
+  let entry = rows[0];
+  if (input.content?.trim() && !input.vault_blob_path) {
+    entry = await indexInlineContent(entry, auth.user_id, input.content);
+  }
+
+  return created(entry);
 }
